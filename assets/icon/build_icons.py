@@ -2,10 +2,11 @@
 
 assets/icon/icon.svg is the single source of truth: the page, the folded
 corner and the sound wave are plain SVG paths in a 108x108 design space.
-This script writes that file and rasterises every PNG the project needs
-(store icon, adaptive-icon layers, legacy launcher icons) with rsvg-convert.
+The background is transparent — the icon's silhouette is the page itself,
+so no dark plate shows around it.
 
-Requires: rsvg-convert (apt install librsvg2-bin)
+This script writes that file and rasterises every PNG the project needs
+with rsvg-convert (apt install librsvg2-bin).
 
 Usage: python3 assets/icon/build_icons.py
 """
@@ -18,18 +19,21 @@ ROOT = Path(__file__).resolve().parents[2]
 ICON_DIR = ROOT / "assets/icon"
 RES = ROOT / "app/src/main/res"
 
-BG_TOP = "#1C2E4C"
-BG_BOTTOM = "#09101C"
 PAPER = "#F5EBD8"
 FOLD = "#CDBA9A"
 CREASE = "#B09C7C"
 ACCENT = "#E9A43E"
+EDGE = "#D8C7A8"
 
 PX0, PY0, PX1, PY1, PR = 28, 24, 80, 84, 10
 CUT = 16
 WAVE_X0, WAVE_X1, WAVE_CY, WAVE_AMP, WAVE_CYCLES = 34, 74, 53, 10.5, 3.4
 WAVE_THICK = 5.2
-SAFE_SCALE = 0.84
+
+# adaptive foreground must stay inside the 66dp safe circle; legacy icons can
+# use more of the canvas because nothing is masked away there.
+FOREGROUND_SCALE = 1.16
+LEGACY_SCALE = 1.32
 
 DENSITIES = {"mdpi": 1, "hdpi": 1.5, "xhdpi": 2, "xxhdpi": 3, "xxxhdpi": 4}
 
@@ -55,64 +59,35 @@ FOLD_TRI = f"M63.5,{PY0} L{PX1},{PY0 + CUT} H63.5 Z"
 CREASE_LINE = f"M63.5,{PY0} L{PX1},{PY0 + CUT}"
 
 
-def svg_document(body: str, size=108, extra_defs="", square_bg=True,
-                 clip="" ) -> str:
-    bg = ""
-    if square_bg:
-        bg = (f'<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">'
-              f'<stop offset="0" stop-color="{BG_TOP}"/>'
-              f'<stop offset="1" stop-color="{BG_BOTTOM}"/></linearGradient>{extra_defs}</defs>'
-              f'<rect width="108" height="108" fill="url(#bg)"/>')
-    else:
-        bg = f"<defs>{extra_defs}</defs>"
-    clip_def = ""
-    if clip:
-        clip_def = f'<clipPath id="clip">{clip}</clipPath>'
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" '
-            f'viewBox="0 0 108 108">{bg}{clip_def}{body}</svg>')
-
-
-def artwork(group="") -> str:
-    """Page + fold + wave, drawn in the 108x108 space."""
+def artwork(transform: str = "") -> str:
     inner = (
-        f'<path d="{PANEL}" fill="{PAPER}"/>'
+        f'<path d="{PANEL}" fill="{PAPER}" stroke="{EDGE}" stroke-width="0.8"/>'
         f'<path d="{FOLD_TRI}" fill="{FOLD}"/>'
         f'<path d="{CREASE_LINE}" stroke="{CREASE}" stroke-width="0.9" fill="none"/>'
         f'<path d="{wave_path()}" stroke="{ACCENT}" stroke-width="{WAVE_THICK}" '
-        f'stroke-linecap="round" stroke-linejoin="round" fill="none" clip-path="url(#pageclip)"/>'
+        f'stroke-linecap="round" stroke-linejoin="round" fill="none" '
+        f'clip-path="url(#pageclip)"/>'
     )
-    return f'<g {group}>{inner}</g>'
+    group = f'<g transform="{transform}">{inner}</g>' if transform else inner
+    return f'<clipPath id="pageclip"><path d="{PANEL}"/></clipPath>{group}'
 
 
-def icon_svg() -> str:
-    body = (f'<clipPath id="pageclip"><path d="{PANEL}"/></clipPath>'
-            + artwork())
-    return svg_document(body, size=1024)
+def centered(scale: float) -> str:
+    off = (108 - 108 * scale) / 2
+    return f"translate({off:.3f},{off:.3f}) scale({scale})"
 
 
-def foreground_svg() -> str:
-    gap = (108 - 108 * SAFE_SCALE) / 2
-    body = (f'<clipPath id="pageclip"><path d="{PANEL}"/></clipPath>'
-            + artwork(f'transform="translate({gap:.3f},{gap:.3f}) scale({SAFE_SCALE})"'))
-    return svg_document(body, size=432, square_bg=False)
+def svg_document(body: str, px: int) -> str:
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{px}" height="{px}" '
+            f'viewBox="0 0 108 108">{body}</svg>')
 
 
-def background_svg() -> str:
-    return svg_document("", size=432)
+def icon_svg(px: int = 1024) -> str:
+    return svg_document(artwork(centered(LEGACY_SCALE)), px)
 
 
-def legacy_svg(round_shape: bool) -> str:
-    shape = ('<circle cx="54" cy="54" r="52"/>' if round_shape
-             else '<rect x="2" y="2" width="104" height="104" rx="24" ry="24"/>')
-    body = (f'<clipPath id="pageclip"><path d="{PANEL}"/></clipPath>' + artwork())
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="432" height="432" '
-            f'viewBox="0 0 108 108">'
-            f'<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">'
-            f'<stop offset="0" stop-color="{BG_TOP}"/>'
-            f'<stop offset="1" stop-color="{BG_BOTTOM}"/></linearGradient>'
-            f'<clipPath id="shape">{shape}</clipPath></defs>'
-            f'<g clip-path="url(#shape)">'
-            f'<rect width="108" height="108" fill="url(#bg)"/>{body}</g></svg>')
+def foreground_svg(px: int = 432) -> str:
+    return svg_document(artwork(centered(FOREGROUND_SCALE)), px)
 
 
 def render(svg: str, out: Path, size: int) -> None:
@@ -133,13 +108,14 @@ def main() -> None:
     render(icon_svg(), ICON_DIR / "icon-1024.png", 1024)
     render(icon_svg(), ICON_DIR / "icon-512.png", 512)
 
-    fg, bg = foreground_svg(), background_svg()
     for name, mult in DENSITIES.items():
         d = RES / f"mipmap-{name}"
-        render(fg, d / "ic_launcher_foreground.png", int(108 * mult))
-        render(bg, d / "ic_launcher_background.png", int(108 * mult))
-        render(legacy_svg(False), d / "ic_launcher.png", int(48 * mult))
-        render(legacy_svg(True), d / "ic_launcher_round.png", int(48 * mult))
+        render(foreground_svg(), d / "ic_launcher_foreground.png", int(108 * mult))
+        # transparent plate: the page itself is the icon silhouette
+        render(f'<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108"/>',
+               d / "ic_launcher_background.png", int(108 * mult))
+        render(icon_svg(), d / "ic_launcher.png", int(48 * mult))
+        render(icon_svg(), d / "ic_launcher_round.png", int(48 * mult))
         print("wrote", d)
 
 
