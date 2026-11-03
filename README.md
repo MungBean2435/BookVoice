@@ -6,6 +6,8 @@
 
 整个界面用 Jetpack Compose 写成，包含动态取色、浮动导航胶囊、液态玻璃与可拖拽的 tab 镜头；书页与声音是这个 App 的两个主角。
 
+<p align="center"><a href="https://github.com/MungBean2435/BookVoice/releases/latest"><img src="https://img.shields.io/github/v/release/MungBean2435/BookVoice?label=下载%20APK" alt="release"></a></p>
+
 <p align="center"><img src="assets/icon/icon-512.png" width="96" alt="书声图标"></p>
 
 - 版本：**3.0.0**（versionCode 59）
