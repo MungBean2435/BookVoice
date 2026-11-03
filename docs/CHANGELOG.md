@@ -7,7 +7,7 @@
 **3.0.0** — 开源发布
 - 项目更名「书声」（BookVoice）：应用名、关于页、通知栏兜底标题统一改成「书声」；包名从 `io.github.mungbean2435.tingshu` 换成 `io.github.mungbean2435.bookvoice`，主题改为 `Theme.BookVoice`，数据库 / SharedPreferences / 备份文件名与媒体会话 id 同步改名。
 - 因为 applicationId 变了，旧版和新版会并存安装；旧版数据用「备份导出 → 导入」迁移（导入端仍兼容旧版 `"app": "tingshu"` 的备份文件）。
-- 新图标：深墨蓝渐变底 + 折角书页 + 琥珀色声波，改成自适应图标（`mipmap-anydpi-v26` + `ic_launcher_foreground/background`），取代原来的蓝底书页 drawable；图标源文件在 `assets/icon/`（`render_icon.py` 出 PNG，`gen_vector.py` 出矢量）。
+- 新图标：深墨蓝渐变底 + 折角书页 + 琥珀色声波。源文件是 SVG：`assets/icon/icon.svg`（108×108 设计空间，`build_icons.py` 生成并栅格化），自适应图标用位图图层 `mipmap-*/ic_launcher_foreground.png` + `ic_launcher_background.png`，另配传统方形 / 圆形 PNG；不用 vector 图层，避免部分 OEM 桌面渲染成空白。
 - 开源准备：README 重写；release 签名改为读取可选的 `keystore.properties`，缺失时回退 debug 签名；`.gitignore` 收口（签名、构建产物、`research/`、`docs/evidence/`）；新增 GitHub Actions（单元测试 + assembleDebug 产物）。
 - 不随仓库发布：`research/readest-compose/`（含 AGPL 参考实现）与 `docs/evidence/`（含个人书架实机截图）。
 
