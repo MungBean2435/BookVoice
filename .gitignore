@@ -1,0 +1,29 @@
+# Gradle
+.gradle/
+.kotlin/
+build/
+local.properties
+
+# IDE
+.idea/
+*.iml
+*.hprof
+.DS_Store
+
+# 签名文件绝不入库
+keystore.properties
+*.keystore
+*.jks
+
+# 构建产物
+*.apk
+*.aab
+captures/
+
+# 不随仓库发布：阅读页参考实现（含 AGPL 代码）与实机截图（含个人书架）
+research/
+docs/evidence/
+
+# Native
+.cxx/
+.externalNativeBuild/
