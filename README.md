@@ -21,6 +21,20 @@
 - **本地书库**：导入、封面、书签、进度、缓存都在本机；API Key 只存在应用私有目录。
 - **纸感界面**：Jetpack Compose、动态取色、浮动导航胶囊、液态玻璃与页面变形。
 
+## 界面
+
+<p align="center">
+  <img src="docs/screenshots/shelf.png" width="46%" alt="书架">
+  <img src="docs/screenshots/reader.png" width="46%" alt="阅读页与操作栏">
+</p>
+<p align="center"><sub>书架 · 阅读页与操作栏（点句起听、目录、书签、Aa、菜单）</sub></p>
+
+<p align="center">
+  <img src="docs/screenshots/toc.png" width="46%" alt="分卷目录">
+  <img src="docs/screenshots/playback.png" width="46%" alt="播放设置">
+</p>
+<p align="center"><sub>分卷目录 · 播放设置（进度、语速、音色、定时、缓存本章）</sub></p>
+
 ## 功能
 
 ### 导入与书库
