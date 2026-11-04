@@ -20,7 +20,9 @@ data class Book(
 data class Chapter(
     val bookId: String,
     val idx: Int,
-    val title: String
+    val title: String,
+    /** 所属卷名；旧数据或没有卷结构的书为 null。 */
+    val volume: String? = null
 )
 
 /**

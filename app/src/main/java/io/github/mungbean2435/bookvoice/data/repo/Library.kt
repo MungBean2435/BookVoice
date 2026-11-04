@@ -125,7 +125,14 @@ class Library(private val context: Context) {
         var charCount = 0
 
         parsed.chapters.forEachIndexed { chapterIdx, chapter ->
-            chapterRows.add(Chapter(bookId = id, idx = chapterIdx, title = chapter.title))
+            chapterRows.add(
+                Chapter(
+                    bookId = id,
+                    idx = chapterIdx,
+                    title = chapter.title,
+                    volume = chapter.volume
+                )
+            )
             chapter.blocks.forEachIndexed { blockIdx, text ->
                 blockRows.add(
                     Block(

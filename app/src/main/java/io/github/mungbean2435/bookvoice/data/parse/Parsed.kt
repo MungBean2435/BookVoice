@@ -11,7 +11,9 @@ data class ParsedBook(
 data class ParsedChapter(
     val title: String,
     val blocks: List<String>,
-    val images: List<ParsedImage>
+    val images: List<ParsedImage>,
+    /** 所属卷名；没有卷结构的书为 null。 */
+    val volume: String? = null
 )
 
 /** 插图位置：插在第 afterBlockIdx 个文本块之后（0 表示正文最前面）。 */

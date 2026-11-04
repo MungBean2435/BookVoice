@@ -42,6 +42,15 @@ data class SynthResult(
     val durationMs: Long
 )
 
+/** 流式合成结果：音频边收边播，这里只汇总统计量。 */
+data class StreamResult(
+    /** 收到的 PCM 字节数（不含 WAV 头）。 */
+    val pcmBytes: Long,
+    val durationMs: Long,
+    val finishReason: String?,
+    val truncated: Boolean
+)
+
 /** 供应商错误要能区分对待：Key 错不重试，限流退避，400 大概率是超长。 */
 sealed class TtsException(message: String) : Exception(message) {
     class Auth(message: String) : TtsException(message)
@@ -81,4 +90,14 @@ interface TtsProvider {
     suspend fun fetchCatalog(config: ProviderConfig): TtsCatalog = builtinCatalog()
 
     suspend fun synthesize(request: SynthRequest): SynthResult
+
+    /** 是否支持边合成边播（流式 PCM）。 */
+    val supportsStreaming: Boolean get() = false
+
+    /**
+     * 流式合成：每收到一块 PCM（16-bit LE）就回调一次 [onPcm]。
+     * 默认不支持；支持流式的供应商应把同一块文本的完整音频缓存起来，供下次直接播放。
+     */
+    suspend fun streamPcm(request: SynthRequest, onPcm: (ByteArray) -> Unit): StreamResult =
+        throw UnsupportedOperationException("$displayName 不支持流式合成")
 }

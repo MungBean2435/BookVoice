@@ -24,6 +24,11 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -71,6 +76,7 @@ fun BookmarksScreen(
     val reserve = LocalFloatingChromeReserve.current
     var entries by remember { mutableStateOf<List<BookmarkEntry>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    val snackbarHostState = remember { SnackbarHostState() }
 
     suspend fun reload() {
         entries = withContext(Dispatchers.IO) { library.allBookmarks() }
@@ -83,47 +89,81 @@ fun BookmarksScreen(
         title = if (LocalAppLanguage.current == AppLanguage.En) "Bookmarks" else "书签",
         state = state.topBar
     ) { padding ->
-        when {
-            loading -> Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator()
+        Box(Modifier.fillMaxSize()) {
+            when {
+                loading -> Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
+
+                entries.isEmpty() -> EmptyBookmarks(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding)
+                )
+
+                else -> LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding),
+                    state = state.list,
+                    contentPadding = PaddingValues(
+                        start = tokens.pageHorizontalPadding,
+                        end = tokens.pageHorizontalPadding,
+                        top = 8.dp,
+                        bottom = 32.dp + reserve
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(entries, key = { it.bookmark.id }) { entry ->
+                        BookmarkCard(
+                            entry = entry,
+                            onOpen = { onOpen(entry) },
+                            onDelete = {
+                                // 先从列表移除，让点击立刻有反馈；提示条保留这条书签供撤销。
+                                entries = entries.filterNot { it.bookmark.id == entry.bookmark.id }
+                                snackbarHostState.currentSnackbarData?.dismiss()
+                                val deleting = scope.launch(Dispatchers.IO) {
+                                    library.deleteBookmark(entry.bookmark.id)
+                                }
+                                scope.launch {
+                                    val result = snackbarHostState.showSnackbar(
+                                        message = "已删除书签",
+                                        actionLabel = "撤销",
+                                        duration = SnackbarDuration.Long
+                                    )
+                                    if (result == SnackbarResult.ActionPerformed) {
+                                        // 等删除落库再插回同一个 id，避免先后顺序颠倒。
+                                        deleting.join()
+                                        withContext(Dispatchers.IO) { library.addBookmark(entry.bookmark) }
+                                        entries = (entries + entry)
+                                            .sortedByDescending { it.bookmark.createdAt }
+                                    }
+                                }
+                            }
+                        )
+                    }
+                }
             }
 
-            entries.isEmpty() -> EmptyBookmarks(
+            SnackbarHost(
+                hostState = snackbarHostState,
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-            )
-
-            else -> LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                state = state.list,
-                contentPadding = PaddingValues(
-                    start = tokens.pageHorizontalPadding,
-                    end = tokens.pageHorizontalPadding,
-                    top = 8.dp,
-                    bottom = 32.dp + reserve
-                ),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                items(entries, key = { it.bookmark.id }) { entry ->
-                    BookmarkCard(
-                        entry = entry,
-                        onOpen = { onOpen(entry) },
-                        onDelete = {
-                            entries = entries.filterNot { it.bookmark.id == entry.bookmark.id }
-                            scope.launch(Dispatchers.IO) {
-                                library.deleteBookmark(entry.bookmark.id)
-                            }
-                        }
-                    )
-                }
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = tokens.pageHorizontalPadding)
+                    .padding(bottom = 16.dp + reserve)
+            ) { data ->
+                Snackbar(
+                    snackbarData = data,
+                    shape = tokens.cardShape,
+                    containerColor = MaterialTheme.colorScheme.inverseSurface,
+                    contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                    actionColor = MaterialTheme.colorScheme.inversePrimary
+                )
             }
         }
     }

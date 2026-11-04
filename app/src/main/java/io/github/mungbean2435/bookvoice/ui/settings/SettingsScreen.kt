@@ -34,6 +34,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.mungbean2435.bookvoice.data.settings.AppInfo
 import io.github.mungbean2435.bookvoice.data.settings.AppLanguage
 import io.github.mungbean2435.bookvoice.data.settings.Settings
 import io.github.mungbean2435.bookvoice.data.settings.ThemeMode
@@ -99,7 +100,7 @@ fun SettingsScreen(
         val keyHint = if (active.apiKey.isBlank()) " · 未填 Key" else ""
         "${active.name} · $providerName$keyHint"
     }
-    val versionName = remember(context) { appVersion(context) }
+    val versionName = remember(context) { AppInfo.versionName(context) }
 
     val groups = listOf(
         listOf(
@@ -313,10 +314,6 @@ private fun SettingsContent(
     }
 }
 
-@Suppress("DEPRECATION")
-private fun appVersion(context: Context): String = runCatching {
-    context.packageManager.getPackageInfo(context.packageName, 0).versionName
-}.getOrNull().orEmpty().ifBlank { "—" }
 
 @Preview(showBackground = true, widthDp = 390, heightDp = 844, name = "设置 · Clean")
 @Composable

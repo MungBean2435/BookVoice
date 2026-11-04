@@ -89,8 +89,10 @@ import io.github.mungbean2435.bookvoice.ui.shelf.ShelfScreen
 import io.github.mungbean2435.bookvoice.ui.theme.AppearanceSettings
 import io.github.mungbean2435.bookvoice.ui.theme.BookVoiceDesign
 import io.github.mungbean2435.bookvoice.ui.theme.resolvedGlassTint
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 
 /** 旧存档里可能还留着已删除的 "Player"，统一回落到书架。 */
 private val AppTabSaver = Saver<AppTab, String>(
@@ -265,6 +267,11 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
     // 胶囊不可见 / 当前书不是被点的这本 / 矩形为空 → 不带起点，整页淡入。
     val openFromCapsule: (Book, MorphOrigin?) -> Unit = { book, fallbackOrigin ->
         scope.launch {
+            // 书架列表里的 Book 可能是本次会话早期的快照，阅读进度已经变了；
+            // 打开前只补读一次最新的进度，避免总是从第一章重新开始。
+            val fresh = withContext(Dispatchers.IO) {
+                runCatching { vm.library().book(book.id) }.getOrNull()
+            } ?: book
             // 1) 先切 currentBook，胶囊的标题和封面立刻换成这本书。
             CurrentBook.remember(book.id)
             // 2) 这一轮标成未收尾：宿主会在 progress 还是 0 的时候就挂上阅读页，
@@ -272,7 +279,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
             overlay.beginOpen()
             if (book.id != playerBookId) Metrics.markOpenStart()
             playerBookId = book.id
-            playerChapter = book.lastChapterIdx
+            playerChapter = fresh.lastChapterIdx
             // 3) 只空转一帧：这一帧里胶囊按新书重排、阅读页开始组合。
             withFrameNanos { }
             // 4) 起点优先用胶囊容器矩形（胶囊一直在 onGloballyPositioned 里维护它）；
@@ -314,6 +321,11 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
         // 这种走不到 1 的情况——只等 expanded 会永远等不到，overlay 就摘不掉了。
         snapshotFlow { overlay.settled }.filter { it }.first()
         overlayExpanded = false
+    }
+
+    // 阅读页收起后刷新书架快照，章节进度/上次位置在下一次打开时才是新的。
+    LaunchedEffect(overlayExpanded) {
+        if (!overlayExpanded && playerBookId != null) vm.refresh()
     }
 
     fun selectTab(tab: AppTab) {
@@ -567,6 +579,12 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                             playerBookId = openChaptersBook
                             playerChapter = chapter
                             chaptersBookId = null
+                            // 选章后立刻退出也要记住位置；阅读页的防抖保存来不及执行。
+                            scope.launch(Dispatchers.IO) {
+                                runCatching {
+                                    vm.library().saveProgress(openChaptersBook, chapter, 0, 0)
+                                }
+                            }
                         }
                     )
                 }

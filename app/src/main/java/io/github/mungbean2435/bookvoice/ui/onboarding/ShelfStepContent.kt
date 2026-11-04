@@ -6,26 +6,33 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.Button
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import io.github.mungbean2435.bookvoice.data.settings.AppLanguage
 import io.github.mungbean2435.bookvoice.data.settings.ShelfSource
+import io.github.mungbean2435.bookvoice.ui.ImportTask
+import io.github.mungbean2435.bookvoice.ui.components.ImportTaskCard
 
 @Composable
 internal fun ShelfStepContent(
     strings: OnboardingStrings,
+    language: AppLanguage,
     selected: ShelfSource,
     importedCount: Int,
-    busy: Boolean,
+    importTask: ImportTask?,
     enabled: Boolean,
     onSelect: (ShelfSource) -> Unit,
     onPickFile: () -> Unit,
-    onPickFolder: () -> Unit
+    onPickFolder: () -> Unit,
+    onCancelImport: () -> Unit,
+    onRetryImport: () -> Unit,
+    onDismissImport: () -> Unit
 ) {
+    val busy = importTask?.running == true
     StepContent {
         OptionCard(
             title = strings.shelf.emptyTitle,
@@ -64,11 +71,18 @@ internal fun ShelfStepContent(
                     Text(strings.shelf.pickFolder)
                 }
             }
-            if (busy) {
+            if (importTask != null) {
                 Spacer(Modifier.height(12.dp))
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                ImportTaskCard(
+                    task = importTask,
+                    language = language,
+                    onCancel = onCancelImport,
+                    onRetry = onRetryImport,
+                    onDismiss = onDismissImport,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
-            if (importedCount > 0) {
+            if (importedCount > 0 && importTask == null) {
                 Spacer(Modifier.height(10.dp))
                 Text(
                     text = stringFormat(strings.shelf.importedFormat, importedCount),

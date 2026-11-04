@@ -26,8 +26,8 @@ android {
         applicationId = "io.github.mungbean2435.bookvoice"
         minSdk = 26
         targetSdk = 35
-        versionCode = 59
-        versionName = "3.0.0"
+        versionCode = 72
+        versionName = "3.4.0"
     }
 
     signingConfigs {

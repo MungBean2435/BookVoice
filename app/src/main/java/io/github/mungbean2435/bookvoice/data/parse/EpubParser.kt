@@ -55,18 +55,39 @@ class EpubParser(private val file: File, private val imagesDir: File) {
             val bookTitle = firstText(opfDoc, "dc:title") ?: fallbackTitle
             val author = firstText(opfDoc, "dc:creator")
             val coverPath = extractCover(opfDoc, manifest, baseDir)
+            val toc = readTocInfo(opfDoc, manifest, baseDir)
 
             val chapters = ArrayList<ParsedChapter>()
+            var currentVolume: String? = null
             for (idref in spineIds) {
                 val href = manifest[idref] ?: continue
                 if (!isHtml(href)) continue
                 val path = resolve(baseDir, href)
+                if (toc.navPath != null && path == toc.navPath) continue
                 val entry = findEntry(path) ?: findEntry(href) ?: continue
                 val doc = Jsoup.parse(zipBytes(entry).toString(Charsets.UTF_8), "", Parser.htmlParser())
                 val chapterDir = path.substringBeforeLast('/', "")
                 val (blocks, images) = collectBlocks(doc, chapterDir)
                 if (blocks.isEmpty() && images.isEmpty()) continue
-                chapters.add(ParsedChapter(chapterTitle(doc, chapters.size), blocks, images))
+
+                val title = chapterTitle(doc, chapters.size)
+                var volume = toc.volumes[path]
+                if (volume == null && VolumeTitles.isVolumeTitle(title)) {
+                    // 旧 EPUB 的卷标题页：没有 nav 信息时按标题兜底。
+                    if (blocks.size <= 1 && images.isEmpty()) {
+                        currentVolume = title
+                        continue
+                    }
+                    volume = title
+                }
+                if (volume != null) {
+                    currentVolume = volume
+                } else {
+                    volume = currentVolume
+                }
+                if (volume != null && title == volume && blocks.size <= 1 && images.isEmpty()) continue
+
+                chapters.add(ParsedChapter(title, blocks, images, volume))
             }
 
             if (chapters.isEmpty()) throw IOException("EPUB 里没有解析到正文")
@@ -158,6 +179,116 @@ class EpubParser(private val file: File, private val imagesDir: File) {
         val title = doc.title().trim()
         if (title.isNotEmpty()) return title
         return "第 ${index + 1} 章"
+    }
+
+    // ---------------- 目录与卷名 ----------------
+
+    private data class TocInfo(
+        val volumes: Map<String, String>,
+        val navPath: String?
+    )
+
+    /**
+     * 读取 EPUB3 的 nav 或 EPUB2 的 NCX，只取"有子项"的顶层条目作为卷名。
+     * 目录只是辅助信息，任何解析失败都退回按标题识别，不影响正文导入。
+     */
+    private fun readTocInfo(
+        opfDoc: Document,
+        manifest: Map<String, String>,
+        baseDir: String
+    ): TocInfo {
+        val volumes = HashMap<String, String>()
+        var navPath: String? = null
+        runCatching {
+            val navHref = opfDoc.getElementsByTag("item").firstOrNull {
+                it.attr("properties").split(Regex("\\s+")).contains("nav")
+            }?.attr("href")?.takeIf { it.isNotBlank() }
+            if (navHref != null) {
+                val path = resolve(baseDir, navHref)
+                navPath = path
+                val entry = findEntry(path) ?: findEntry(navHref) ?: return@runCatching
+                val doc = Jsoup.parse(
+                    zipBytes(entry).toString(Charsets.UTF_8),
+                    "",
+                    Parser.xmlParser()
+                )
+                val nav = doc.getElementsByTag("nav").firstOrNull {
+                    it.attr("epub:type").split(Regex("\\s+")).contains("toc")
+                } ?: doc.getElementsByTag("nav").firstOrNull {
+                    it.getElementsByTag("ol").isNotEmpty()
+                }
+                val list = nav?.children()?.firstOrNull { it.tagName().equals("ol", true) }
+                    ?: nav?.getElementsByTag("ol")?.firstOrNull()
+                if (list != null) {
+                    walkNavList(list, path.substringBeforeLast('/', ""), null, volumes)
+                }
+            } else {
+                val tocId = opfDoc.getElementsByTag("spine").firstOrNull()?.attr("toc").orEmpty()
+                if (tocId.isBlank()) return@runCatching
+                val ncxHref = manifest[tocId]?.takeIf { it.isNotBlank() } ?: return@runCatching
+                val path = resolve(baseDir, ncxHref)
+                val entry = findEntry(path) ?: findEntry(ncxHref) ?: return@runCatching
+                val doc = Jsoup.parse(
+                    zipBytes(entry).toString(Charsets.UTF_8),
+                    "",
+                    Parser.xmlParser()
+                )
+                val navMap = doc.getElementsByTag("navMap").firstOrNull() ?: return@runCatching
+                navMap.children()
+                    .filter { it.tagName().equals("navPoint", true) }
+                    .forEach {
+                        walkNcxPoint(it, path.substringBeforeLast('/', ""), null, volumes)
+                    }
+            }
+        }
+        return TocInfo(volumes, navPath)
+    }
+
+    private fun walkNavList(
+        list: Element,
+        baseDir: String,
+        parentVolume: String?,
+        out: MutableMap<String, String>
+    ) {
+        for (li in list.children().filter { it.tagName().equals("li", true) }) {
+            val labelEl = li.children().firstOrNull {
+                it.tagName().equals("a", true) || it.tagName().equals("span", true)
+            }
+            val label = labelEl?.text()?.trim().orEmpty()
+            val href = labelEl
+                ?.takeIf { it.tagName().equals("a", true) }
+                ?.attr("href")
+                .orEmpty()
+            val nested = li.children().firstOrNull { it.tagName().equals("ol", true) }
+            val volume = if (nested != null && label.isNotEmpty()) label else parentVolume
+            if (href.isNotBlank() && volume != null) {
+                out[resolve(baseDir, href)] = volume
+            }
+            if (nested != null) walkNavList(nested, baseDir, volume, out)
+        }
+    }
+
+    private fun walkNcxPoint(
+        point: Element,
+        baseDir: String,
+        parentVolume: String?,
+        out: MutableMap<String, String>
+    ) {
+        val label = point.children()
+            .firstOrNull { it.tagName().equals("navLabel", true) }
+            ?.text()
+            ?.trim()
+            .orEmpty()
+        val src = point.children()
+            .firstOrNull { it.tagName().equals("content", true) }
+            ?.attr("src")
+            .orEmpty()
+        val nested = point.children().filter { it.tagName().equals("navPoint", true) }
+        val volume = if (nested.isNotEmpty() && label.isNotEmpty()) label else parentVolume
+        if (src.isNotBlank() && volume != null) {
+            out[resolve(baseDir, src)] = volume
+        }
+        nested.forEach { walkNcxPoint(it, baseDir, volume, out) }
     }
 
     private fun extractCover(doc: Document, manifest: Map<String, String>, baseDir: String): String? {

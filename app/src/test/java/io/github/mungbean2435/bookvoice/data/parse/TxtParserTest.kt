@@ -70,4 +70,69 @@ class TxtParserTest {
         parts.forEach { assertTrue(it.length <= TextSplit.MAX_CHARS) }
         assertEquals(paragraph, parts.joinToString(""))
     }
+
+    @Test
+    fun volumeHeadersGroupFollowingChapters() {
+        val text = """
+            第一卷 起风
+
+            第一章 夜航
+
+            海面没有灯。
+
+            第二章 灯塔
+
+            灯亮了一夜。
+
+            第二卷 归途
+
+            第一章 回港
+
+            船靠岸时天刚亮。
+        """.trimIndent()
+
+        val book = TxtParser.parse(text, "书")
+
+        assertEquals(3, book.chapters.size)
+        assertEquals("第一章 夜航", book.chapters[0].title)
+        assertEquals("第一卷 起风", book.chapters[0].volume)
+        assertEquals("第一卷 起风", book.chapters[1].volume)
+        assertEquals("第二卷 归途", book.chapters[2].volume)
+    }
+
+    @Test
+    fun volumeIntroIsAttachedToFirstChapter() {
+        val text = """
+            第一卷 起风
+
+            本卷讲述一次远航。
+
+            第一章 夜航
+
+            海面没有灯。
+        """.trimIndent()
+
+        val book = TxtParser.parse(text, "书")
+
+        assertEquals(1, book.chapters.size)
+        assertEquals("第一章 夜航", book.chapters[0].title)
+        assertEquals("第一卷 起风", book.chapters[0].volume)
+        assertEquals("本卷讲述一次远航。", book.chapters[0].blocks.first())
+    }
+
+    @Test
+    fun volumeWithoutChaptersStillProducesContent() {
+        val text = """
+            第一卷 起风
+
+            只有一段卷首语，没有章标题。
+        """.trimIndent()
+
+        val book = TxtParser.parse(text, "书")
+
+        assertEquals(1, book.chapters.size)
+        assertEquals("第一卷 起风", book.chapters[0].title)
+        assertEquals("第一卷 起风", book.chapters[0].volume)
+        assertTrue(book.chapters[0].blocks.isNotEmpty())
+    }
 }

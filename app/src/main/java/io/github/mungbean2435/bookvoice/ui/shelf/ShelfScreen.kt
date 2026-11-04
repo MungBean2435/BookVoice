@@ -3,6 +3,7 @@
 package io.github.mungbean2435.bookvoice.ui.shelf
 
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.animation.AnimatedVisibility
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -38,7 +39,6 @@ import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -66,6 +66,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.mungbean2435.bookvoice.data.db.Book
 import io.github.mungbean2435.bookvoice.ui.AppViewModel
+import io.github.mungbean2435.bookvoice.ui.ImportTask
+import io.github.mungbean2435.bookvoice.ui.components.ImportTaskCard
 import io.github.mungbean2435.bookvoice.ui.components.rememberCoverBitmap
 import io.github.mungbean2435.bookvoice.ui.components.CoverCache
 import io.github.mungbean2435.bookvoice.ui.components.LocalFloatingChromeReserve
@@ -89,7 +91,8 @@ fun ShelfScreen(
     onOpenSettings: () -> Unit
 ) {
     val books by vm.books.collectAsStateWithLifecycle()
-    val busy by vm.busy.collectAsStateWithLifecycle()
+    val importTask by vm.importTask.collectAsStateWithLifecycle()
+    val importing = importTask?.running == true
     var pendingDelete by remember { mutableStateOf<Book?>(null) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -98,12 +101,15 @@ fun ShelfScreen(
 
     ShelfContent(
         books = books,
-        busy = busy,
+        importTask = importTask,
         gridState = state.grid,
         topBarState = state.topBar,
         onOpen = onOpen,
         onLongClick = { pendingDelete = it },
-        onImport = { picker.launch(IMPORT_MIME) },
+        onImport = { if (!importing) picker.launch(IMPORT_MIME) },
+        onCancelImport = vm::cancelImport,
+        onRetryImport = vm::retryFailedImports,
+        onDismissImport = vm::dismissImportTask,
         onOpenSettings = onOpenSettings
     )
 
@@ -128,14 +134,18 @@ fun ShelfScreen(
 @Composable
 private fun ShelfContent(
     books: List<Book>,
-    busy: Boolean,
+    importTask: ImportTask?,
     gridState: LazyGridState,
     topBarState: TopAppBarState,
     onOpen: (Book, MorphOrigin?) -> Unit,
     onLongClick: (Book) -> Unit,
     onImport: () -> Unit,
+    onCancelImport: () -> Unit,
+    onRetryImport: () -> Unit,
+    onDismissImport: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
+    val importing = importTask?.running == true
     val language = LocalAppLanguage.current
     BookVoicePageScaffold(
         title = if (language == AppLanguage.En) "Library" else "书架",
@@ -150,33 +160,46 @@ private fun ShelfContent(
         },
         floatingActionButton = {
             if (books.isNotEmpty()) {
-                ShelfFab(onImport = onImport, language = language)
+                ShelfFab(onImport = onImport, enabled = !importing, language = language)
             }
         }
     ) { padding ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            if (books.isEmpty()) {
-                EmptyShelf(onImport = onImport, language = language)
-            } else {
-                ShelfGrid(
-                    books = books,
-                    gridState = gridState,
-                    onOpen = onOpen,
-                    onLongClick = onLongClick
-                )
+            AnimatedVisibility(visible = importTask != null) {
+                if (importTask != null) {
+                    ImportTaskCard(
+                        task = importTask,
+                        language = language,
+                        onCancel = onCancelImport,
+                        onRetry = onRetryImport,
+                        onDismiss = onDismissImport,
+                        modifier = Modifier.padding(
+                            start = 16.dp,
+                            end = 16.dp,
+                            top = 6.dp,
+                            bottom = 10.dp
+                        )
+                    )
+                }
             }
-            if (busy) {
-                LinearProgressIndicator(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .align(Alignment.TopCenter),
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
-                )
+            Box(Modifier
+                .fillMaxWidth()
+                .weight(1f)
+            ) {
+                if (books.isEmpty()) {
+                    EmptyShelf(onImport = onImport, enabled = !importing, language = language)
+                } else {
+                    ShelfGrid(
+                        books = books,
+                        gridState = gridState,
+                        onOpen = onOpen,
+                        onLongClick = onLongClick
+                    )
+                }
             }
         }
     }
@@ -365,7 +388,7 @@ private fun BookCover(
 }
 
 @Composable
-private fun EmptyShelf(onImport: () -> Unit, language: AppLanguage) {
+private fun EmptyShelf(onImport: () -> Unit, enabled: Boolean, language: AppLanguage) {
     val english = language == AppLanguage.En
     Box(
         modifier = Modifier.fillMaxSize(),
@@ -387,6 +410,7 @@ private fun EmptyShelf(onImport: () -> Unit, language: AppLanguage) {
             Spacer(Modifier.height(24.dp))
             Button(
                 onClick = onImport,
+                enabled = enabled,
                 modifier = Modifier.heightIn(min = 48.dp)
             ) {
                 Text(if (english) "Import TXT / EPUB" else "导入 TXT / EPUB")
@@ -396,15 +420,23 @@ private fun EmptyShelf(onImport: () -> Unit, language: AppLanguage) {
 }
 
 @Composable
-private fun ShelfFab(onImport: () -> Unit, language: AppLanguage) {
+private fun ShelfFab(onImport: () -> Unit, enabled: Boolean, language: AppLanguage) {
     val tokens = BookVoiceDesign.tokens
     ExtendedFloatingActionButton(
-        onClick = onImport,
+        onClick = { if (enabled) onImport() },
         icon = { Icon(Icons.Filled.Add, contentDescription = null) },
         text = { Text(if (language == AppLanguage.En) "Import" else "导入") },
-        containerColor = MaterialTheme.colorScheme.primary,
-        contentColor = MaterialTheme.colorScheme.onPrimary,
         shape = tokens.cardShape,
+        containerColor = if (enabled) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHighest
+        },
+        contentColor = if (enabled) {
+            MaterialTheme.colorScheme.onPrimary
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
         elevation = FloatingActionButtonDefaults.elevation(
             defaultElevation = 0.dp,
             pressedElevation = 0.dp,
@@ -420,12 +452,15 @@ private fun ShelfScreenPreview() {
     BookVoiceTheme(darkTheme = false, dynamicColor = false) {
         ShelfContent(
             books = previewBooks,
-            busy = false,
+            importTask = null,
             gridState = rememberLazyGridState(),
             topBarState = rememberTopAppBarState(),
             onOpen = { _, _ -> },
             onLongClick = {},
             onImport = {},
+            onCancelImport = {},
+            onRetryImport = {},
+            onDismissImport = {},
             onOpenSettings = {}
         )
     }

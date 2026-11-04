@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ButtonDefaults
@@ -43,7 +44,6 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -55,8 +55,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -68,6 +71,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -91,16 +95,83 @@ internal data class PlayerChromeState(
     val voiceText: String,
     val configName: String,
     val sleepText: String,
-    val cacheText: String
+    val cacheText: String,
+    val cacheRunning: Boolean
 )
 
 /**
  * 展开态顶栏：只有 48dp 操作行，不再有章节名那一排（章节名只在收起态出现）。
  * 背景和底部分隔线由 PlayerScreen 的固定高度顶栏槽统一画。
  */
+/**
+ * 播放失败时留在正文上方的常驻提示。Toast 会消失，错误不能跟着消失；
+ * 这里保留「重试」和「关闭」，由用户决定下一步。
+ */
+@Composable
+internal fun PlayerErrorBanner(
+    message: String,
+    onRetry: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = "播放中断",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            TextButton(
+                onClick = onRetry,
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer
+                )
+            ) {
+                Text("重试")
+            }
+            IconButton(onClick = onDismiss) {
+                Icon(Icons.Filled.Close, contentDescription = "关闭")
+            }
+        }
+    }
+}
+
+private val TapToReadIcon: ImageVector = ImageVector.Builder(
+    name = "TapToRead",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f
+).addPath(
+    pathData = PathParser().parsePathString(
+        "M9 11.24V7.5C9 6.12 10.12 5 11.5 5S14 6.12 14 7.5v3.74c1.21-.81 2-2.18 2-3.74" +
+            "C16 5.01 13.99 3 11.5 3S7 5.01 7 7.5c0 1.56.79 2.93 2 3.74zm9.84 4.63l-4.54-2.26" +
+            "c-.17-.07-.35-.11-.54-.11H13v-6c0-.83-.67-1.5-1.5-1.5S10 6.67 10 7.5v10.74l-3.43-.72" +
+            "c-.08-.01-.15-.03-.24-.03-.31 0-.59.13-.79.33l-.79.8 4.94 4.94c.27.27.65.44 1.06.44" +
+            "h6.79c.75 0 1.33-.55 1.44-1.28l.75-5.27c.01-.07.02-.14.02-.2 0-.62-.38-1.16-.91-1.38z"
+    ).toNodes(),
+    fill = SolidColor(Color.Black)
+).build()
+
 @Composable
 internal fun PlayerTopBar(
     tapToRead: Boolean,
+    onTapToReadChange: (Boolean) -> Unit,
     onBack: () -> Unit,
     onOpenChapters: () -> Unit,
     onOpenReadingSettings: () -> Unit,
@@ -151,34 +222,33 @@ internal fun PlayerTopBar(
             Text("书签", style = MaterialTheme.typography.labelLarge)
         }
 
+        IconButton(
+            onClick = { onTapToReadChange(!tapToRead) },
+            modifier = Modifier.size(40.dp)
+        ) {
+            Icon(
+                imageVector = TapToReadIcon,
+                contentDescription = if (tapToRead) "关闭点读" else "开启点读",
+                tint = if (tapToRead) {
+                    colors.primary
+                } else {
+                    colors.onSurfaceVariant.copy(alpha = 0.55f)
+                }
+            )
+        }
+
         Box {
             TextButton(
                 onClick = onOpenReadingSettings,
                 modifier = Modifier
                     .height(height)
-                    .semantics {
-                        contentDescription = if (tapToRead) {
-                            "阅读设置，点读已开启"
-                        } else {
-                            "阅读设置"
-                        }
-                    },
+                    .semantics { contentDescription = "阅读设置" },
                 contentPadding = PaddingValues(horizontal = 8.dp),
                 colors = ButtonDefaults.textButtonColors(
                     contentColor = colors.onSurfaceVariant
                 )
             ) {
                 Text("Aa", style = MaterialTheme.typography.labelLarge)
-            }
-            if (tapToRead) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(top = 8.dp, end = 8.dp)
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .background(colors.primary)
-                )
             }
         }
 
@@ -856,7 +926,11 @@ private fun SecondaryControls(
             onVoice
         ),
         SecondaryItem("定时", state.sleepText, onSleep),
-        SecondaryItem("缓存本章", state.cacheText, onCache)
+        SecondaryItem(
+            if (state.cacheRunning) "停止缓存" else "缓存本章",
+            state.cacheText,
+            onCache
+        )
     )
     val twoColumns = LocalDensity.current.fontScale > 1.3f
 
@@ -926,9 +1000,7 @@ private fun SecondaryControl(item: SecondaryItem, modifier: Modifier) {
 @Composable
 internal fun ReadingSettingsSheet(
     fontSizeSp: Int,
-    tapToRead: Boolean,
     onFontSizeChange: (Int) -> Unit,
-    onTapToReadChange: (Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(
@@ -981,28 +1053,11 @@ internal fun ReadingSettingsSheet(
 
             HorizontalDivider()
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 56.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("点读", style = MaterialTheme.typography.bodyLarge)
-                    Text(
-                        "点击正文从该段开始朗读",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(checked = tapToRead, onCheckedChange = onTapToReadChange)
-            }
-
             Text(
-                "关闭点读后，单击正文收起或显示控制栏。",
+                "点读开关在顶栏书签旁边：图标亮起时，点击正文从该段开始朗读。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 8.dp)
+                modifier = Modifier.padding(top = 12.dp)
             )
         }
     }
@@ -1015,6 +1070,7 @@ private fun PlayerTopBarPreview() {
         Box(Modifier.background(MaterialTheme.colorScheme.background)) {
             PlayerTopBar(
                 tapToRead = true,
+                onTapToReadChange = {},
                 onBack = {},
                 onOpenChapters = {},
                 onOpenReadingSettings = {},

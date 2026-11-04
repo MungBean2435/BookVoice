@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
@@ -63,6 +64,9 @@ internal fun ChapterSheet(
 ) {
     val tokens = BookVoiceDesign.tokens
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    // 和整页目录一致：打开时定位到当前章，而不是从第 1 章滚起。
+    val initialChapter = currentChapter.coerceIn(0, chapters.lastIndex.coerceAtLeast(0))
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialChapter)
     val rowShape = if (tokens.isClean) {
         ContinuousRoundedCornerShape(QueueRowShape)
     } else {
@@ -91,6 +95,7 @@ internal fun ChapterSheet(
                 )
             } else {
                 LazyColumn(
+                    state = listState,
                     contentPadding = PaddingValues(
                         start = 16.dp,
                         end = 16.dp,

@@ -1,6 +1,7 @@
 package io.github.mungbean2435.bookvoice.tts.mimo
 
 import android.util.Base64
+import io.github.mungbean2435.bookvoice.tts.StreamResult
 import io.github.mungbean2435.bookvoice.tts.SynthRequest
 import io.github.mungbean2435.bookvoice.tts.SynthResult
 import io.github.mungbean2435.bookvoice.tts.TtsCatalog
@@ -9,8 +10,15 @@ import io.github.mungbean2435.bookvoice.tts.ProviderConfig
 import io.github.mungbean2435.bookvoice.tts.TtsProvider
 import io.github.mungbean2435.bookvoice.tts.Voice
 import io.github.mungbean2435.bookvoice.tts.catalog.CatalogHttp
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -29,6 +37,7 @@ class MimoProvider : TtsProvider {
     override val id: String = "mimo"
     override val displayName: String = "小米 MiMo"
     override val audioFormat: String = "wav"
+    override val supportsStreaming: Boolean get() = true
     override val defaultConfig: ProviderConfig = ProviderConfig(
         baseUrl = "https://api.xiaomimimo.com/v1/chat/completions",
         model = "mimo-v2.5-tts",
@@ -83,26 +92,7 @@ class MimoProvider : TtsProvider {
     override suspend fun synthesize(request: SynthRequest): SynthResult = withContext(Dispatchers.IO) {
         if (request.apiKey.isBlank()) throw TtsException.Auth("还没有填 MiMo API Key")
 
-        val payload = JSONObject().apply {
-            put("model", request.model)
-            put(
-                "messages",
-                JSONArray().put(
-                    JSONObject().apply {
-                        put("role", "assistant")
-                        put("content", request.text)
-                    }
-                )
-            )
-            put(
-                "audio",
-                JSONObject().apply {
-                    put("format", request.format)
-                    put("voice", request.voiceId)
-                }
-            )
-            put("stream", false)
-        }
+        val payload = payload(request, stream = false, audioFormat = request.format)
 
         val connection = (URL(request.baseUrl).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
@@ -112,6 +102,10 @@ class MimoProvider : TtsProvider {
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
             setRequestProperty("Accept", "application/json")
             setRequestProperty("api-key", request.apiKey)
+        }
+        // 预取/切书取消时，断开阻塞中的读，别让合成协程挂到 readTimeout。
+        coroutineContext[Job]?.invokeOnCompletion { cause ->
+            if (cause != null) connection.disconnect()
         }
 
         val body: String
@@ -154,6 +148,121 @@ class MimoProvider : TtsProvider {
             durationMs = actualMs
         )
     }
+
+    /**
+     * 流式合成：MiMo SSE 的音频在 choices[0].delta.audio.data（base64 PCM16，24kHz 单声道）。
+     * 实测首块 0.8s 左右到达，比非流式整块（150 字约 8s）快得多。
+     */
+    override suspend fun streamPcm(
+        request: SynthRequest,
+        onPcm: (ByteArray) -> Unit
+    ): StreamResult = withContext(Dispatchers.IO) {
+        if (request.apiKey.isBlank()) throw TtsException.Auth("还没有填 MiMo API Key")
+        val payload = payload(request, stream = true, audioFormat = "pcm16")
+
+        val connection = (URL(request.baseUrl).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 15_000
+            // 流式连接会持续有数据；20s 空闲视为断流（非流式整块要 30s，故单独放宽）
+            readTimeout = 20_000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            setRequestProperty("Accept", "text/event-stream")
+            setRequestProperty("api-key", request.apiKey)
+        }
+
+        var total = 0L
+        var finish: String? = null
+        // 取消时断开连接：invokeOnCompletion 要等协程真正结束才触发，而 readLine 正阻塞着，
+        // 只靠它会导致协程永远结束不了。这里用独立协程轮询 isActive，一取消就 disconnect。
+        val job = coroutineContext[Job]
+        val cancellation = job?.invokeOnCompletion { cause ->
+            if (cause != null) runCatching { connection.disconnect() }
+        }
+        val forceClose = CoroutineScope(Dispatchers.IO).launch {
+            while (job != null && job.isActive) delay(200L)
+            runCatching { connection.disconnect() }
+        }
+        try {
+            connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+            val code = connection.responseCode
+            if (code !in 200..299) {
+                val body = connection.errorStream?.bufferedReader(Charsets.UTF_8)
+                    ?.use { it.readText() }.orEmpty()
+                throw mapError(code, body)
+            }
+            connection.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    if (!line.startsWith("data:")) continue
+                    val data = line.substring(5).trim()
+                    if (data.isEmpty()) continue
+                    if (data == "[DONE]") break
+                    val json = runCatching { JSONObject(data) }.getOrNull() ?: continue
+                    json.optJSONObject("error")?.let { error ->
+                        val message = error.optString("message").ifBlank { error.toString() }
+                        throw TtsException.Server("MiMo 流式错误：${message.take(120)}")
+                    }
+                    val choice = json.optJSONArray("choices")?.optJSONObject(0) ?: continue
+                    choice.optString("finish_reason").takeIf { it.isNotBlank() }?.let { finish = it }
+                    val audio = (choice.optJSONObject("delta") ?: choice.optJSONObject("message"))
+                        ?.optJSONObject("audio") ?: continue
+                    val data64 = audio.optString("data")
+                    if (data64.isBlank()) continue
+                    val pcm = runCatching { Base64.decode(data64, Base64.DEFAULT) }
+                        .getOrElse { throw TtsException.Server("音频解码失败") }
+                    if (pcm.isNotEmpty()) {
+                        total += pcm.size
+                        onPcm(pcm)
+                    }
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: TtsException) {
+            throw e
+        } catch (e: IOException) {
+            throw TtsException.Network("网络错误：${e.message ?: "连接失败"}")
+        } catch (e: Exception) {
+            throw TtsException.Server("流式解析失败：${e.message ?: "未知错误"}")
+        } finally {
+            forceClose.cancel()
+            cancellation?.dispose()
+            connection.disconnect()
+        }
+
+        if (total == 0L) throw TtsException.Empty("流式响应里没有音频数据")
+        val durationMs = total * 1000L / 48_000L
+        val expectedMs = request.text.length * 196L
+        StreamResult(
+            pcmBytes = total,
+            durationMs = durationMs,
+            finishReason = finish,
+            truncated = finish == "length" || (expectedMs > 0 && durationMs < expectedMs * 7 / 10)
+        )
+    }
+
+    private fun payload(request: SynthRequest, stream: Boolean, audioFormat: String): JSONObject =
+        JSONObject().apply {
+            put("model", request.model)
+            put(
+                "messages",
+                JSONArray().put(
+                    JSONObject().apply {
+                        put("role", "assistant")
+                        put("content", request.text)
+                    }
+                )
+            )
+            put(
+                "audio",
+                JSONObject().apply {
+                    put("format", audioFormat)
+                    put("voice", request.voiceId)
+                }
+            )
+            put("stream", stream)
+        }
 
     private fun mapError(code: Int, body: String): TtsException = when {
         code == 402 -> TtsException.Quota("MiMo 账户余额不足或额度用尽，请到控制台充值/查看额度")

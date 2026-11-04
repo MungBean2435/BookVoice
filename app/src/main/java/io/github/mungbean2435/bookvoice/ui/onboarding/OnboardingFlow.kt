@@ -52,6 +52,7 @@ fun OnboardingFlow(
     val appearance by AppearanceSettings.state.collectAsStateWithLifecycle()
     val books by vm.books.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
+    val importTask by vm.importTask.collectAsStateWithLifecycle()
     val current = startup ?: return
 
     val language = current.language
@@ -298,16 +299,20 @@ fun OnboardingFlow(
 
                     2 -> ShelfStepContent(
                         strings = strings,
+                        language = language,
                         selected = shelfDraft,
                         importedCount = books.size,
-                        busy = busy,
+                        importTask = importTask,
                         enabled = !saving,
                         onSelect = { next ->
                             shelfDraft = next
                             saveCurrent()
                         },
                         onPickFile = { picker.launch(arrayOf("*/*")) },
-                        onPickFolder = { folderPicker.launch(null) }
+                        onPickFolder = { folderPicker.launch(null) },
+                        onCancelImport = vm::cancelImport,
+                        onRetryImport = vm::retryFailedImports,
+                        onDismissImport = vm::dismissImportTask
                     )
 
                     3 -> PlaybackStepContent(

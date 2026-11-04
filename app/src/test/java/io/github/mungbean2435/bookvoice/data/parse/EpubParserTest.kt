@@ -165,4 +165,143 @@ class EpubParserTest {
             (1..galleryCount).forEach { putBytes("$imageFilesDir/gallery$it.png", byteArrayOf(9, 10)) }
         }
     }
+
+    @Test
+    fun readsVolumeNamesFromEpub3Nav() {
+        val dir = Files.createTempDirectory("epub-nav").toFile()
+        val epub = File(dir, "nav.epub")
+        buildEpubWithToc(epub, useNcx = false)
+
+        val book = EpubParser(epub, File(dir, "images")).parse("兜底书名")
+
+        assertEquals(2, book.chapters.size)
+        assertEquals("第一章 夜", book.chapters[0].title)
+        assertEquals("第一卷 起风", book.chapters[0].volume)
+        assertEquals("第二卷 归途", book.chapters[1].volume)
+    }
+
+    @Test
+    fun readsVolumeNamesFromEpub2Ncx() {
+        val dir = Files.createTempDirectory("epub-ncx").toFile()
+        val epub = File(dir, "ncx.epub")
+        buildEpubWithToc(epub, useNcx = true)
+
+        val book = EpubParser(epub, File(dir, "images")).parse("兜底书名")
+
+        assertEquals(2, book.chapters.size)
+        assertEquals("第一卷 起风", book.chapters[0].volume)
+        assertEquals("第二卷 归途", book.chapters[1].volume)
+    }
+
+    private fun buildEpubWithToc(file: File, useNcx: Boolean) {
+        val navItem = if (useNcx) {
+            """<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>"""
+        } else {
+            """<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>"""
+        }
+        val spineAttrs = if (useNcx) " toc=\"ncx\"" else ""
+        val spineNav = if (useNcx) "" else """<itemref idref="nav"/>"""
+        val opf = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+              <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+                <dc:identifier id="bookid">urn:uuid:toc</dc:identifier>
+                <dc:title>分卷书</dc:title>
+                <dc:creator>作者乙</dc:creator>
+              </metadata>
+              <manifest>
+                $navItem
+                <item id="ch1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+                <item id="ch2" href="chapter2.xhtml" media-type="application/xhtml+xml"/>
+              </manifest>
+              <spine$spineAttrs>
+                $spineNav
+                <itemref idref="ch1"/>
+                <itemref idref="ch2"/>
+              </spine>
+            </package>
+        """.trimIndent()
+
+        val container = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+              <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+            </container>
+        """.trimIndent()
+
+        val ch1 = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <html xmlns="http://www.w3.org/1999/xhtml"><head><title>第一章</title></head>
+            <body><h1>第一章 夜</h1><p>夜色落在江面上。</p></body></html>
+        """.trimIndent()
+        val ch2 = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <html xmlns="http://www.w3.org/1999/xhtml"><head><title>第二章</title></head>
+            <body><h1>第二章 旧相册</h1><p>我翻开旧相册。</p></body></html>
+        """.trimIndent()
+        val nav = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+            <head><title>目录</title></head>
+            <body>
+              <nav epub:type="toc">
+                <ol>
+                  <li><a href="chapter1.xhtml">第一卷 起风</a>
+                    <ol>
+                      <li><a href="chapter1.xhtml">第一章 夜</a></li>
+                      <li><a href="chapter2.xhtml">第二章 旧相册</a></li>
+                    </ol>
+                  </li>
+                  <li><a href="chapter2.xhtml">第二卷 归途</a>
+                    <ol>
+                      <li><a href="chapter2.xhtml">第二章 旧相册</a></li>
+                    </ol>
+                  </li>
+                </ol>
+              </nav>
+            </body></html>
+        """.trimIndent()
+        val ncx = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+              <navMap>
+                <navPoint id="v1">
+                  <navLabel><text>第一卷 起风</text></navLabel>
+                  <content src="chapter1.xhtml"/>
+                  <navPoint id="c1">
+                    <navLabel><text>第一章 夜</text></navLabel>
+                    <content src="chapter1.xhtml"/>
+                  </navPoint>
+                  <navPoint id="c2">
+                    <navLabel><text>第二章 旧相册</text></navLabel>
+                    <content src="chapter2.xhtml"/>
+                  </navPoint>
+                </navPoint>
+                <navPoint id="v2">
+                  <navLabel><text>第二卷 归途</text></navLabel>
+                  <content src="chapter2.xhtml"/>
+                  <navPoint id="c3">
+                    <navLabel><text>第二章 旧相册</text></navLabel>
+                    <content src="chapter2.xhtml"/>
+                  </navPoint>
+                </navPoint>
+              </navMap>
+            </ncx>
+        """.trimIndent()
+
+        ZipOutputStream(file.outputStream()).use { zip ->
+            fun put(name: String, content: String) {
+                zip.putNextEntry(ZipEntry(name))
+                zip.write(content.toByteArray(Charsets.UTF_8))
+                zip.closeEntry()
+            }
+
+            put("mimetype", "application/epub+zip")
+            put("META-INF/container.xml", container)
+            put("OEBPS/content.opf", opf)
+            put("OEBPS/chapter1.xhtml", ch1)
+            put("OEBPS/chapter2.xhtml", ch2)
+            if (useNcx) put("OEBPS/toc.ncx", ncx) else put("OEBPS/nav.xhtml", nav)
+        }
+    }
 }

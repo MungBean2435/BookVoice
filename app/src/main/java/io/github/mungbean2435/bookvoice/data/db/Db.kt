@@ -39,6 +39,7 @@ class Db private constructor(context: Context) : SQLiteOpenHelper(context, DB_NA
                 bookId TEXT NOT NULL,
                 idx INTEGER NOT NULL,
                 title TEXT NOT NULL,
+                volume TEXT,
                 PRIMARY KEY(bookId, idx)
             )
             """.trimIndent()
@@ -160,6 +161,10 @@ class Db private constructor(context: Context) : SQLiteOpenHelper(context, DB_NA
                 """.trimIndent()
             )
         }
+        if (oldVersion < 4) {
+            // v4 起章节记录所属卷名；旧数据的 volume 为 NULL，界面按标题兜底，不强行拆分。
+            db.execSQL("ALTER TABLE chapters ADD COLUMN volume TEXT")
+        }
     }
 
     // ---------------- 写入 ----------------
@@ -175,12 +180,14 @@ class Db private constructor(context: Context) : SQLiteOpenHelper(context, DB_NA
         try {
             db.insertOrThrow("books", null, book.toValues())
 
-            db.compileStatement("INSERT INTO chapters(bookId, idx, title) VALUES(?,?,?)").use { st ->
+            db.compileStatement("INSERT INTO chapters(bookId, idx, title, volume) VALUES(?,?,?,?)").use { st ->
                 chapters.forEach { chapter ->
                     st.clearBindings()
                     st.bindString(1, chapter.bookId)
                     st.bindLong(2, chapter.idx.toLong())
                     st.bindString(3, chapter.title)
+                    val volume = chapter.volume
+                    if (volume == null) st.bindNull(4) else st.bindString(4, volume)
                     st.executeInsert()
                 }
             }
@@ -286,7 +293,10 @@ class Db private constructor(context: Context) : SQLiteOpenHelper(context, DB_NA
                     Chapter(
                         bookId = bookId,
                         idx = c.getInt(c.getColumnIndexOrThrow("idx")),
-                        title = c.getString(c.getColumnIndexOrThrow("title"))
+                        title = c.getString(c.getColumnIndexOrThrow("title")),
+                        volume = c.getColumnIndex("volume").let { i ->
+                            if (i < 0 || c.isNull(i)) null else c.getString(i)
+                        }
                     )
                 )
             }
@@ -656,7 +666,7 @@ class Db private constructor(context: Context) : SQLiteOpenHelper(context, DB_NA
 
     companion object {
         private const val DB_NAME = "bookvoice.db"
-        private const val DB_VERSION = 3
+        private const val DB_VERSION = 4
 
         @Volatile
         private var instance: Db? = null

@@ -138,6 +138,9 @@ fun PlayerScreen(
     val waitingNetwork by player.waitingNetwork.collectAsStateWithLifecycle()
     val progress by player.progress.collectAsStateWithLifecycle()
     val cacheProgress by player.cacheProgress.collectAsStateWithLifecycle()
+    val cacheRunning by player.cacheRunning.collectAsStateWithLifecycle()
+    val cacheFailed by player.cacheFailed.collectAsStateWithLifecycle()
+    val cacheChapterIdx by player.cacheChapterIdx.collectAsStateWithLifecycle()
     val settings by Settings.state.collectAsStateWithLifecycle()
     val activeConfig = settings.activeConfigOrDefault()
 
@@ -163,7 +166,6 @@ fun PlayerScreen(
     var lastPlayingChapter by remember { mutableIntStateOf(-1) }
 
     var showBookmarks by remember { mutableStateOf(false) }
-    var showChapters by remember { mutableStateOf(false) }
     var showFailures by remember { mutableStateOf(false) }
     var showSleep by remember { mutableStateOf(false) }
     var showSpeed by remember { mutableStateOf(false) }
@@ -173,6 +175,8 @@ fun PlayerScreen(
     var showPlaybackSettings by remember { mutableStateOf(false) }
     var bookmarks by remember { mutableStateOf<List<Bookmark>>(emptyList()) }
     var failures by remember { mutableStateOf<List<Failure>>(emptyList()) }
+    var playbackError by remember { mutableStateOf<String?>(null) }
+    var cacheWasRunning by remember { mutableStateOf(false) }
     var dragging by remember { mutableStateOf(false) }
     var dragValue by remember { mutableFloatStateOf(0f) }
     val listState = rememberLazyListState()
@@ -337,9 +341,11 @@ fun PlayerScreen(
     }
 
     // 不朗读时手动翻到哪里，就把阅读进度记到哪里（700ms 防抖）；
-    // 播放中由 SpeechPlayer 按音频段落记录，避免互相覆盖。
-    LaunchedEffect(didInitialScroll, displayedChapter, currentBlock, playingBlock) {
-        if (!didInitialScroll || rows.isEmpty() || playingBlock >= 0) return@LaunchedEffect
+    // 播放/缓冲中由 SpeechPlayer 按音频段落记录，避免互相覆盖。
+    // 暂停时也要记录：用户可能只是停下来翻到后面的章节再退出。
+    val audioActive = isPlaying || isBuffering
+    LaunchedEffect(didInitialScroll, displayedChapter, currentBlock, audioActive) {
+        if (!didInitialScroll || rows.isEmpty() || audioActive) return@LaunchedEffect
         delay(700)
         withContext(Dispatchers.IO) {
             library.saveProgress(bookId, displayedChapter, currentBlock, 0)
@@ -414,12 +420,38 @@ fun PlayerScreen(
         rows = next
     }
 
+    // 换书时先清掉上一本的错误提示；引擎里的 Error 不会跨书显示。
+    LaunchedEffect(bookId) { playbackError = null }
+
     LaunchedEffect(playerState) {
-        val state = playerState
-        if (state is PlayerState.Error) {
-            Toast.makeText(context, state.message, Toast.LENGTH_LONG).show()
-            player.clearError()
+        when (val state = playerState) {
+            is PlayerState.Error -> {
+                val playing = player.playingBookId.value
+                if (playing.isBlank() || playing == bookId) playbackError = state.message
+                // 错误已经转成页面上的常驻提示，引擎回到 Idle，
+                // 避免离开本页后旧错误影响试听等其他界面。
+                player.clearError()
+            }
+
+            is PlayerState.Playing, is PlayerState.Buffering, is PlayerState.Paused ->
+                playbackError = null
+
+            PlayerState.Idle -> Unit
         }
+    }
+
+    LaunchedEffect(cacheRunning, cacheChapterIdx) {
+        if (cacheWasRunning && !cacheRunning &&
+            cacheChapterIdx == displayedChapter &&
+            cacheProgress.second > 0 && cacheProgress.first >= cacheProgress.second
+        ) {
+            Toast.makeText(
+                context,
+                if (cacheFailed > 0) "本章已缓存，${cacheFailed} 段失败" else "本章已缓存",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        cacheWasRunning = cacheRunning
     }
 
     LaunchedEffect(bookId, playerState) {
@@ -452,18 +484,28 @@ fun PlayerScreen(
         voiceText = activeConfig.voice.ifBlank { "未设置" },
         configName = activeConfig.name,
         sleepText = if (sleepMinutes > 0) "$sleepMinutes 分" else "未设置",
-        cacheText = if (cacheProgress.second > 0) {
-            "${cacheProgress.first}/${cacheProgress.second}"
-        } else {
-            "离线"
+        cacheRunning = cacheRunning,
+        cacheText = when {
+            cacheRunning && cacheProgress.second > 0 ->
+                "${cacheProgress.first}/${cacheProgress.second}"
+            cacheRunning -> "缓存中…"
+            cacheChapterIdx == displayedChapter &&
+                cacheProgress.second > 0 &&
+                cacheProgress.first >= cacheProgress.second ->
+                if (cacheFailed > 0) "已缓存 · ${cacheFailed} 段失败" else "已缓存"
+            else -> "离线"
         }
     )
 
     val topStatus = when {
         waitingNetwork -> "网络中断" to true
         isBuffering -> "缓冲中…" to false
-        cacheProgress.second > 0 && cacheProgress.first < cacheProgress.second ->
+        cacheRunning ->
             "缓存 ${cacheProgress.first}/${cacheProgress.second}" to false
+        cacheChapterIdx == displayedChapter &&
+            cacheProgress.second > 0 &&
+            cacheProgress.first >= cacheProgress.second ->
+            "已缓存" to false
         else -> "" to false
     }
 
@@ -596,8 +638,11 @@ fun PlayerScreen(
                         if (expanded) {
                             PlayerTopBar(
                                 tapToRead = settings.tapToRead,
+                                onTapToReadChange = { enabled ->
+                                    Settings.update { it.copy(tapToRead = enabled) }
+                                },
                                 onBack = onBack,
-                                onOpenChapters = { showChapters = true },
+                                onOpenChapters = { onOpenChapters(displayedChapter) },
                                 onOpenReadingSettings = { showReadingSettings = true },
                                 onOpenBookmarks = { showBookmarks = true },
                                 onOpenMenu = { showMenu = true },
@@ -661,6 +706,17 @@ fun PlayerScreen(
                             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
                         )
                     }
+                }
+
+                AnimatedVisibility(visible = playbackError != null) {
+                    PlayerErrorBanner(
+                        message = playbackError.orEmpty(),
+                        onRetry = {
+                            playbackError = null
+                            startPlayback(displayedChapter, currentBlock)
+                        },
+                        onDismiss = { playbackError = null }
+                    )
                 }
 
                 Box(
@@ -737,7 +793,7 @@ fun PlayerScreen(
                         item(key = "book-header") {
                             PlayerBookHeader(
                                 book = currentBook,
-                                onOpenChapters = { showChapters = true },
+                                onOpenChapters = { onOpenChapters(displayedChapter) },
                                 onOpenBookmarks = { showBookmarks = true }
                             )
                         }
@@ -937,7 +993,9 @@ fun PlayerScreen(
             onSpeed = { showSpeed = true },
             onVoice = { showVoice = true },
             onSleep = { showSleep = true },
-            onCache = { player.cacheChapter(bookId, displayedChapter) },
+            onCache = {
+                if (cacheRunning) player.cancelCache() else player.cacheChapter(bookId, displayedChapter)
+            },
             onDismiss = { showPlaybackSettings = false }
         )
     }
@@ -945,7 +1003,6 @@ fun PlayerScreen(
     if (showReadingSettings) {
         ReadingSettingsSheet(
             fontSizeSp = settings.fontSizeSp,
-            tapToRead = settings.tapToRead,
             onFontSizeChange = { size ->
                 Settings.update {
                     it.copy(
@@ -955,9 +1012,6 @@ fun PlayerScreen(
                         )
                     )
                 }
-            },
-            onTapToReadChange = { enabled ->
-                Settings.update { it.copy(tapToRead = enabled) }
             },
             onDismiss = { showReadingSettings = false }
         )
@@ -980,33 +1034,6 @@ fun PlayerScreen(
             },
             onAdd = { addBookmark() },
             onDismiss = { showBookmarks = false }
-        )
-    }
-
-    if (showChapters) {
-        ChapterSheet(
-            chapters = chapters,
-            currentChapter = displayedChapter,
-            onSelect = { index ->
-                showChapters = false
-                // 只有插图的章没有可朗读的正文，直接翻过去，别让播放器跳到下一章。
-                // 用布局元数据判断，不依赖这一章正文是否已经拉进内存。
-                val hasText = (layout?.blockCountOf(index) ?: 0) > 0
-                if (hasText) {
-                    startPlayback(index, 0)
-                } else {
-                    followPlayback = false
-                    autoFollow = false
-                    displayedChapter = index
-                    scope.launch {
-                        val rowIndex = rows.indexOfFirst { it.chapterIdx == index }
-                        if (rowIndex >= 0) {
-                            listState.animateScrollToItem(rowIndex + headerItemCount)
-                        }
-                    }
-                }
-            },
-            onDismiss = { showChapters = false }
         )
     }
 
