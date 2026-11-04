@@ -2,6 +2,10 @@
 
 > 版本号规则：修 bug 升 patch，加功能升 minor，重构升 major。
 
+## Unreleased
+
+- 文档：新增 3.5–3.7 全量路线图与验收标准（README / docs/ROADMAP.md）。
+
 ## 3.4.x
 
 **3.4.0** — 诊断面板、分卷目录与更完整的任务反馈
