@@ -29,7 +29,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -38,10 +37,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -74,6 +71,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -90,7 +88,6 @@ import io.github.mungbean2435.bookvoice.data.db.ChapterImage
 import io.github.mungbean2435.bookvoice.data.db.Failure
 import io.github.mungbean2435.bookvoice.data.settings.Metrics
 import io.github.mungbean2435.bookvoice.data.settings.Settings
-import io.github.mungbean2435.bookvoice.data.settings.TtsConfigs
 import io.github.mungbean2435.bookvoice.playback.PlayerState
 import io.github.mungbean2435.bookvoice.playback.Speech
 import io.github.mungbean2435.bookvoice.tts.PlaybackMath
@@ -122,6 +119,7 @@ fun PlayerScreen(
     onBack: () -> Unit,
     onOpenChapters: (Int) -> Unit,
     onOpenSettings: () -> Unit,
+    onEditTtsConfig: (String) -> Unit,
     onCoverBounds: ((Rect) -> Unit)? = null,
     // 变形动画期间只挂轻量外壳（顶栏 + 骨架），正文等动画结束再组合，
     // 免得正文的文本测量挤进「点击→首帧」这段关键路径。
@@ -135,14 +133,18 @@ fun PlayerScreen(
     val playerState by player.state.collectAsStateWithLifecycle()
     val highlight by player.highlight.collectAsStateWithLifecycle()
     val sleepMinutes by player.sleepMinutes.collectAsStateWithLifecycle()
+    val sleepAtChapterEnd by player.sleepAtChapterEnd.collectAsStateWithLifecycle()
     val waitingNetwork by player.waitingNetwork.collectAsStateWithLifecycle()
     val progress by player.progress.collectAsStateWithLifecycle()
     val cacheProgress by player.cacheProgress.collectAsStateWithLifecycle()
     val cacheRunning by player.cacheRunning.collectAsStateWithLifecycle()
     val cacheFailed by player.cacheFailed.collectAsStateWithLifecycle()
     val cacheChapterIdx by player.cacheChapterIdx.collectAsStateWithLifecycle()
+    val cacheBookId by player.cacheBookId.collectAsStateWithLifecycle()
     val settings by Settings.state.collectAsStateWithLifecycle()
     val activeConfig = settings.activeConfigOrDefault()
+    // 缓存任务是全局的；只把当前这本书的进度显示在本页。
+    val cacheHere = cacheRunning && cacheBookId == bookId
 
     var book by remember { mutableStateOf<Book?>(null) }
     var chapters by remember { mutableStateOf<List<Chapter>>(emptyList()) }
@@ -167,9 +169,9 @@ fun PlayerScreen(
 
     var showBookmarks by remember { mutableStateOf(false) }
     var showFailures by remember { mutableStateOf(false) }
-    var showSleep by remember { mutableStateOf(false) }
+    var sheetPage by remember { mutableStateOf(PlayerSheetPage.Settings) }
+    var cachedChapters by remember { mutableStateOf<Set<Int>>(emptySet()) }
     var showSpeed by remember { mutableStateOf(false) }
-    var showVoice by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showReadingSettings by remember { mutableStateOf(false) }
     var showPlaybackSettings by remember { mutableStateOf(false) }
@@ -189,8 +191,11 @@ fun PlayerScreen(
     val tokens = BookVoiceDesign.tokens
     val reading = tokens.reading
     val density = LocalDensity.current
-    val paragraphSpacing = with(density) {
-        (settings.fontSizeSp * reading.paragraphSpacingEm).sp.toDp()
+    val paragraphSpacing = settings.readingParagraphSpacingDp.dp
+    val readingFontFamily = when (settings.readingFontFamily) {
+        "serif" -> FontFamily.Serif
+        "sans" -> FontFamily.SansSerif
+        else -> FontFamily.Default
     }
     val chromeSlidePx = with(density) { reading.chromeSlideDistance.roundToPx() }
     val miniBarReserve = tokens.miniPlayerHeight + reading.chromeVerticalPadding * 2
@@ -462,6 +467,22 @@ fun PlayerScreen(
         if (showBookmarks) bookmarks = withContext(Dispatchers.IO) { library.bookmarks(bookId) }
     }
 
+    LaunchedEffect(showPlaybackSettings, sheetPage) {
+        if (showPlaybackSettings && sheetPage == PlayerSheetPage.Offline) {
+            cachedChapters = withContext(Dispatchers.IO) {
+                player.cachedChapterIdxs(bookId, chapters.map { it.idx })
+            }
+        }
+    }
+
+    LaunchedEffect(cacheRunning, cacheFailed, cacheBookId) {
+        if (!cacheRunning && cacheBookId == bookId && cacheFailed == 0 && cacheChapterIdx >= 0 &&
+            cacheProgress.second > 0 && cacheProgress.first >= cacheProgress.second
+        ) {
+            cachedChapters = cachedChapters + cacheChapterIdx
+        }
+    }
+
     val totalChars = (book?.charCount ?: 1).toLong().coerceAtLeast(1)
     val fraction = progress
         ?.takeIf { it.bookId == bookId && it.totalChars > 0 }
@@ -481,26 +502,36 @@ fun PlayerScreen(
         isBuffering = isBuffering,
         waitingNetwork = waitingNetwork,
         speedText = String.format(Locale.US, "%.2f×", settings.speed),
-        voiceText = activeConfig.voice.ifBlank { "未设置" },
+        voiceText = when {
+            activeConfig.voice.isBlank() && activeConfig.providerId == "system" -> "系统默认"
+            activeConfig.voice.isBlank() -> "未设置"
+            else -> activeConfig.voices.firstOrNull { it.id == activeConfig.voice }?.label
+                ?: activeConfig.voice
+        },
         configName = activeConfig.name,
-        sleepText = if (sleepMinutes > 0) "$sleepMinutes 分" else "未设置",
-        cacheRunning = cacheRunning,
+        sleepText = when {
+            sleepAtChapterEnd -> "本章结束"
+            sleepMinutes > 0 -> "$sleepMinutes 分"
+            else -> "未设置"
+        },
+        cacheRunning = cacheHere,
         cacheText = when {
-            cacheRunning && cacheProgress.second > 0 ->
+            cacheHere && cacheProgress.second > 0 ->
                 "${cacheProgress.first}/${cacheProgress.second}"
-            cacheRunning -> "缓存中…"
+            cacheHere -> "缓存中…"
             cacheChapterIdx == displayedChapter &&
                 cacheProgress.second > 0 &&
                 cacheProgress.first >= cacheProgress.second ->
                 if (cacheFailed > 0) "已缓存 · ${cacheFailed} 段失败" else "已缓存"
             else -> "离线"
-        }
+        },
+        hasError = playbackError != null
     )
 
     val topStatus = when {
         waitingNetwork -> "网络中断" to true
         isBuffering -> "缓冲中…" to false
-        cacheRunning ->
+        cacheHere ->
             "缓存 ${cacheProgress.first}/${cacheProgress.second}" to false
         cacheChapterIdx == displayedChapter &&
             cacheProgress.second > 0 &&
@@ -663,7 +694,8 @@ fun PlayerScreen(
                                             text = { Text("定时关闭") },
                                             onClick = {
                                                 showMenu = false
-                                                showSleep = true
+                                                sheetPage = PlayerSheetPage.Sleep
+                                                showPlaybackSettings = true
                                             }
                                         )
                                         DropdownMenuItem(
@@ -783,8 +815,8 @@ fun PlayerScreen(
                             }
                         },
                     contentPadding = PaddingValues(
-                        start = reading.horizontalPadding,
-                        end = reading.horizontalPadding,
+                        start = settings.readingHorizontalPaddingDp.dp,
+                        end = settings.readingHorizontalPaddingDp.dp,
                         top = reading.contentTopPadding,
                         bottom = reading.contentBottomPadding
                     )
@@ -887,6 +919,8 @@ fun PlayerScreen(
                                         blockIdx = block.idx,
                                         highlight = highlight,
                                         fontSize = settings.fontSizeSp.sp,
+                                        lineHeightMultiplier = settings.readingLineHeight,
+                                        fontFamily = readingFontFamily,
                                         isCurrent = isCurrent
                                     )
                                 }
@@ -918,7 +952,10 @@ fun PlayerScreen(
                         state = chromeState,
                         book = book,
                         chapterTitle = currentChapterTitle,
-                        onOpenSettings = { showPlaybackSettings = true },
+                        onOpenSettings = {
+                            sheetPage = PlayerSheetPage.Settings
+                            showPlaybackSettings = true
+                        },
                         onClose = { chromeVisible = false },
                         onToggle = { togglePlayback() },
                         onPrev = {
@@ -960,20 +997,57 @@ fun PlayerScreen(
                 if (loading || !bodyReady) {
                     ReaderSkeleton(
                         reading = reading,
-                        fontSizeSp = settings.fontSizeSp
+                        fontSizeSp = settings.fontSizeSp,
+                        lineHeightMultiplier = settings.readingLineHeight,
+                        paragraphSpacing = settings.readingParagraphSpacingDp.dp,
+                        horizontalPadding = settings.readingHorizontalPaddingDp.dp
                     )
                 }
             }
         }
     }
 
+    val selectVoice: (String, String) -> Unit = { configId, voiceId ->
+        Settings.update { old ->
+            val target = old.configs.firstOrNull { it.id == configId }
+                ?: return@update old
+            val voiceValue = voiceId.trim()
+            if (voiceValue.isEmpty()) {
+                old.copy(
+                    configs = old.configs.map {
+                        if (it.id == configId) it.copy(voice = "") else it
+                    },
+                    activeConfigId = configId
+                )
+            } else {
+                val library = if (target.voices.any { it.id == voiceValue }) {
+                    target.voices
+                } else {
+                    target.voices + Voice(voiceValue, voiceValue)
+                }
+                old.copy(
+                    configs = old.configs.map {
+                        if (it.id == configId) {
+                            it.copy(voice = voiceValue, voices = library)
+                        } else {
+                            it
+                        }
+                    },
+                    activeConfigId = configId
+                )
+            }
+        }
+    }
+
     if (showPlaybackSettings) {
         PlaybackSettingsSheet(
+            page = sheetPage,
+            onPageChange = { sheetPage = it },
             state = chromeState,
-            autoFollow = autoFollow,
-            onResumeFollow = { resumeFollow() },
-            onSeek = { seekPreview(it) },
-            onSeekFinished = { finishSeek() },
+            book = book,
+            chapterTitle = currentChapterTitle,
+            chapterIndex = displayedChapter,
+            chapterCount = chapters.size,
             onToggle = { togglePlayback() },
             onPrevChapter = {
                 startPlayback((displayedChapter - 1).coerceAtLeast(0), 0)
@@ -991,18 +1065,97 @@ fun PlayerScreen(
                 startPlayback(displayedChapter + 1, 0)
             },
             onSpeed = { showSpeed = true },
-            onVoice = { showVoice = true },
-            onSleep = { showSleep = true },
-            onCache = {
-                if (cacheRunning) player.cancelCache() else player.cacheChapter(bookId, displayedChapter)
+            onVoice = { sheetPage = PlayerSheetPage.Voice },
+            onSleep = { sheetPage = PlayerSheetPage.Sleep },
+            onOpenOffline = { sheetPage = PlayerSheetPage.Offline },
+            voiceContent = {
+                VoicePickerContent(
+                    configs = settings.configs,
+                    activeConfigId = settings.activeConfigId,
+                    onSelectConfig = { configId ->
+                        Settings.update { old ->
+                            if (old.configs.any { it.id == configId }) {
+                                old.copy(activeConfigId = configId)
+                            } else {
+                                old
+                            }
+                        }
+                    },
+                    onSelect = { configId, voiceId ->
+                        selectVoice(configId, voiceId)
+                        sheetPage = PlayerSheetPage.Settings
+                    },
+                    onManage = { configId ->
+                        showPlaybackSettings = false
+                        sheetPage = PlayerSheetPage.Settings
+                        onEditTtsConfig(configId)
+                    },
+                    onOpenSettings = {
+                        showPlaybackSettings = false
+                        sheetPage = PlayerSheetPage.Settings
+                        onOpenSettings()
+                    },
+                    onDismiss = { sheetPage = PlayerSheetPage.Settings }
+                )
             },
-            onDismiss = { showPlaybackSettings = false }
+            sleepContent = {
+                SleepTimerContent(
+                    sleepMinutes = sleepMinutes,
+                    chapterEnd = sleepAtChapterEnd,
+                    onPickMinutes = { minutes ->
+                        player.startSleepTimer(minutes)
+                        sheetPage = PlayerSheetPage.Settings
+                    },
+                    onPickChapterEnd = {
+                        player.startSleepAtChapterEnd()
+                        sheetPage = PlayerSheetPage.Settings
+                    },
+                    onClear = {
+                        player.startSleepTimer(0)
+                        sheetPage = PlayerSheetPage.Settings
+                    },
+                    onBack = { sheetPage = PlayerSheetPage.Settings }
+                )
+            },
+            offlineContent = {
+                OfflineCacheContent(
+                    chapters = chapters,
+                    currentChapter = displayedChapter,
+                    cacheRunning = cacheHere,
+                    cacheChapterIdx = if (cacheHere) cacheChapterIdx else -1,
+                    cacheProgress = cacheProgress,
+                    cachedChapters = cachedChapters,
+                    onDownload = { index -> player.cacheChapter(bookId, index) },
+                    onCancel = { player.cancelCache() },
+                    onBack = { sheetPage = PlayerSheetPage.Settings }
+                )
+            },
+            onDismiss = {
+                sheetPage = PlayerSheetPage.Settings
+                showPlaybackSettings = false
+            }
         )
     }
 
     if (showReadingSettings) {
         ReadingSettingsSheet(
             fontSizeSp = settings.fontSizeSp,
+            lineHeight = settings.readingLineHeight,
+            paragraphSpacingDp = settings.readingParagraphSpacingDp,
+            horizontalPaddingDp = settings.readingHorizontalPaddingDp,
+            fontFamily = settings.readingFontFamily,
+            onLineHeightChange = { value ->
+                Settings.update { it.copy(readingLineHeight = value) }
+            },
+            onParagraphSpacingChange = { value ->
+                Settings.update { it.copy(readingParagraphSpacingDp = value.coerceIn(0, 24)) }
+            },
+            onHorizontalPaddingChange = { value ->
+                Settings.update { it.copy(readingHorizontalPaddingDp = value.coerceIn(12, 36)) }
+            },
+            onFontFamilyChange = { value ->
+                Settings.update { it.copy(readingFontFamily = value) }
+            },
             onFontSizeChange = { size ->
                 Settings.update {
                     it.copy(
@@ -1077,29 +1230,6 @@ fun PlayerScreen(
         )
     }
 
-    if (showSleep) {
-        AlertDialog(
-            onDismissRequest = { showSleep = false },
-            title = { Text("定时关闭") },
-            text = {
-                Column(Modifier.verticalScroll(rememberScrollState())) {
-                    listOf(15, 30, 45, 60).forEach { minutes ->
-                        TextButton(onClick = {
-                            player.startSleepTimer(minutes)
-                            showSleep = false
-                        }) { Text("$minutes 分钟") }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    player.startSleepTimer(0)
-                    showSleep = false
-                }) { Text("取消定时") }
-            }
-        )
-    }
-
     if (showSpeed) {
         var value by remember { mutableFloatStateOf(settings.speed) }
         AlertDialog(
@@ -1128,93 +1258,6 @@ fun PlayerScreen(
         )
     }
 
-    if (showVoice) {
-        var value by remember(activeConfig.id, settings.configs) {
-            mutableStateOf(activeConfig.voice)
-        }
-        AlertDialog(
-            onDismissRequest = { showVoice = false },
-            title = { Text("音色") },
-            text = {
-                Column {
-                    Text(
-                        "当前配置：${activeConfig.name}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    if (activeConfig.voices.isNotEmpty()) {
-                        Spacer(Modifier.height(8.dp))
-                        LazyRow(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            items(activeConfig.voices, key = { it.id }) { voice ->
-                                FilterChip(
-                                    selected = value == voice.id,
-                                    onClick = { value = voice.id },
-                                    label = { Text(voice.label) }
-                                )
-                            }
-                        }
-                    }
-                    OutlinedTextField(
-                        value = value,
-                        onValueChange = { value = it },
-                        label = { Text("音色 ID") },
-                        singleLine = true
-                    )
-                    Text(
-                        "点上面的已保存音色，或直接填 ID；保存后会自动加入音色库。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    Settings.update { old ->
-                        val voiceValue = value.trim().ifBlank { old.activeConfigOrDefault().voice }
-                        if (old.configs.isEmpty()) {
-                            // 配置被删光时，音色胶囊仍然应该能把输入存下来。
-                            val created = old.activeConfigOrDefault().copy(
-                                id = TtsConfigs.newId(),
-                                voice = voiceValue,
-                                voices = if (voiceValue.isBlank()) {
-                                    emptyList()
-                                } else {
-                                    listOf(Voice(voiceValue, voiceValue))
-                                }
-                            )
-                            old.copy(configs = listOf(created), activeConfigId = created.id)
-                        } else {
-                            val current = old.activeConfigOrDefault()
-                            old.copy(
-                                configs = old.configs.map {
-                                    if (it.id == current.id) {
-                                        val library = if (
-                                            voiceValue.isBlank() ||
-                                            current.voices.any { voice -> voice.id == voiceValue }
-                                        ) {
-                                            current.voices
-                                        } else {
-                                            current.voices + Voice(voiceValue, voiceValue)
-                                        }
-                                        it.copy(voice = voiceValue, voices = library)
-                                    } else {
-                                        it
-                                    }
-                                }
-                            )
-                        }
-                    }
-                    showVoice = false
-                }) { Text("保存") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showVoice = false }) { Text("取消") }
-            }
-        )
-    }
 }
 
 @Composable
@@ -1251,6 +1294,8 @@ private fun FocusParagraph(
     blockIdx: Int,
     highlight: io.github.mungbean2435.bookvoice.playback.Highlight?,
     fontSize: TextUnit,
+    lineHeightMultiplier: Float,
+    fontFamily: FontFamily,
     isCurrent: Boolean
 ) {
     val reading = BookVoiceDesign.reading
@@ -1281,7 +1326,8 @@ private fun FocusParagraph(
         modifier = Modifier.fillMaxWidth(),
         style = MaterialTheme.typography.bodyLarge.copy(
             fontSize = fontSize,
-            lineHeight = (fontSize.value * reading.lineHeightMultiplier).sp
+            lineHeight = (fontSize.value * lineHeightMultiplier).sp,
+            fontFamily = fontFamily
         ),
         color = if (isCurrent) {
             MaterialTheme.colorScheme.onSurface
@@ -1327,23 +1373,27 @@ private suspend fun reportOpenTiming(
 
 /** 首屏加载/定位期间的固定骨架：顶栏槽之外的 6 条灰块，替代全屏转圈。 */
 @Composable
-private fun ReaderSkeleton(reading: BookVoiceReadingTokens, fontSizeSp: Int) {
+private fun ReaderSkeleton(
+    reading: BookVoiceReadingTokens,
+    fontSizeSp: Int,
+    lineHeightMultiplier: Float,
+    paragraphSpacing: Dp,
+    horizontalPadding: Dp
+) {
     val tokens = BookVoiceDesign.tokens
     val density = LocalDensity.current
     val lineHeight = with(density) {
-        (fontSizeSp * reading.lineHeightMultiplier).sp.toDp()
+        (fontSizeSp * lineHeightMultiplier).sp.toDp()
     }
-    val gap = with(density) {
-        (fontSizeSp * reading.paragraphSpacingEm).sp.toDp()
-    }
+    val gap = paragraphSpacing
     val widths = listOf(1f, 0.94f, 0.88f, 1f, 0.9f, 0.62f)
     Column(
         Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
             .padding(
-                start = reading.horizontalPadding,
-                end = reading.horizontalPadding,
+                start = horizontalPadding,
+                end = horizontalPadding,
                 top = reading.contentTopPadding
             )
     ) {

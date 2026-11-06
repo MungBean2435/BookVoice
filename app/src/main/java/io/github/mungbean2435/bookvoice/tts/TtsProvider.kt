@@ -71,6 +71,18 @@ interface TtsProvider {
     /** 这家返回的音频容器格式，决定缓存文件扩展名。 */
     val audioFormat: String
 
+    /**
+     * 是否需要用户填写 API Key。系统 TTS 这类本机能力为 false：
+     * 没有 Key 时也要照常拉目录、缓存音色，而不是直接退回内置列表。
+     */
+    val requiresApiKey: Boolean get() = true
+
+    /**
+     * 音频缓存命名用的供应商标识。默认就是 [id]；
+     * 系统 TTS 会把当前引擎/语言算进去，切换引擎后旧缓存自然失效。
+     */
+    fun cacheKeyId(): String = id
+
     /** 第一次使用这家供应商时的默认端点/模型。 */
     val defaultConfig: ProviderConfig
 

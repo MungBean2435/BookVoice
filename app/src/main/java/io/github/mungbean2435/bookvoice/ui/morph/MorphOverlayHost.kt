@@ -72,7 +72,8 @@ fun MorphOverlayHost(
     backEnabled: Boolean,
     onBack: () -> Unit,
     onOpenChapters: (Int) -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    onEditTtsConfig: (String) -> Unit
 ) {
     val density = LocalDensity.current
     val motion = BookVoiceDesign.motion
@@ -219,7 +220,8 @@ fun MorphOverlayHost(
                                 bodyReady = bodyReady,
                                 onBack = onBack,
                                 onOpenChapters = onOpenChapters,
-                                onOpenSettings = onOpenSettings
+                                onOpenSettings = onOpenSettings,
+                                onEditTtsConfig = onEditTtsConfig
                             )
                         }
                     }

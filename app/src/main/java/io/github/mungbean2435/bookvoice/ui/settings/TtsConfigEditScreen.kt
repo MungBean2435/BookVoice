@@ -31,11 +31,11 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -54,6 +54,9 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.mungbean2435.bookvoice.data.settings.Settings
 import io.github.mungbean2435.bookvoice.data.settings.TtsConfig
@@ -62,6 +65,11 @@ import io.github.mungbean2435.bookvoice.playback.PlayerState
 import io.github.mungbean2435.bookvoice.playback.Speech
 import io.github.mungbean2435.bookvoice.tts.ProviderRegistry
 import io.github.mungbean2435.bookvoice.tts.Voice
+import io.github.mungbean2435.bookvoice.tts.system.SystemTtsProvider
+import io.github.mungbean2435.bookvoice.tts.system.SystemTtsSettings
+import io.github.mungbean2435.bookvoice.tts.system.SystemTtsStatus
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -134,21 +142,53 @@ fun TtsConfigEditScreen(
     val voices = rememberSaveable(stateKey, saver = voiceListSaver) {
         mutableStateListOf<Voice>().apply { addAll(seeded.voices) }
     }
-    // 新建时只有列表为空才默认启用；已有正在用的配置时默认保存为「未启用」，
-    // 避免加一条新配置就把正在听的配置切掉。
-    val initiallyEnabled = (isNew && settings.configs.isEmpty()) ||
-        (!isNew && initial.id == settings.activeConfigId)
-    var enabled by rememberSaveable(stateKey) { mutableStateOf(initiallyEnabled) }
+    // 新建不再默认启用；保存时保留当前朗读配置，只有当前配置失效才自动接管。
     var showKey by rememberSaveable(stateKey) { mutableStateOf(false) }
     var showCatalog by remember { mutableStateOf(false) }
     var showDiscard by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
+    var showTtsLog by remember { mutableStateOf(false) }
     var requestingPreview by remember { mutableStateOf(false) }
     var previewSeen by remember { mutableStateOf(false) }
+    // 试听失败后停在底部状态行里，直到下一次试听或离开页面；不能只靠一闪而过的 toast。
+    var previewError by remember { mutableStateOf<String?>(null) }
+    // 只有本次页面真的发起过试听，才在离开时停掉播放，避免误停正在读的书。
+    val previewStarted = remember { mutableStateOf(false) }
     // 保存/删除后已经调用 onBack；防止双击把列表页也一起弹掉。
     var finishing by remember { mutableStateOf(false) }
 
-    val isCurrentlyActive = !isNew && settings.activeConfigId == initial.id
+    // 系统 TTS 状态：进入页面、以及从系统设置返回时各检测一次；
+    // 失败原因留在「系统引擎」卡片里，并给出跳转入口。
+    var systemStatus by remember(provider.id) { mutableStateOf<SystemTtsStatus?>(null) }
+    var systemChecking by remember(provider.id) { mutableStateOf(false) }
+    var statusRefresh by remember(provider.id) { mutableIntStateOf(0) }
+    // 从系统设置返回 / 点「重新检测」时，让引擎重新绑定并让旧音频缓存失效。
+    var forceRebindNext by remember(provider.id) { mutableStateOf(false) }
+    var settingsOpened by remember(provider.id) { mutableStateOf(false) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, provider.id) {
+        if (provider.id != "system") return@DisposableEffect onDispose { }
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                if (settingsOpened) {
+                    settingsOpened = false
+                    forceRebindNext = true
+                }
+                statusRefresh += 1
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(provider.id, statusRefresh) {
+        val system = provider as? SystemTtsProvider ?: return@LaunchedEffect
+        val force = forceRebindNext
+        forceRebindNext = false
+        systemChecking = true
+        systemStatus = withContext(Dispatchers.IO) { system.status(forceRebind = force) }
+        systemChecking = false
+    }
+
     val initialBaseUrl = seeded.baseUrl.ifBlank { defaults.baseUrl }
     val dirty = name != seeded.name ||
         apiKey != seeded.apiKey ||
@@ -156,19 +196,33 @@ fun TtsConfigEditScreen(
         model != seeded.model ||
         voice != seeded.voice ||
         models.toList() != seeded.models ||
-        voices.toList() != seeded.voices ||
-        enabled != initiallyEnabled
+        voices.toList() != seeded.voices
 
-    val previewing = requestingPreview &&
-        (playerState is PlayerState.Playing || playerState is PlayerState.Buffering)
-    val previewStatus = when {
-        !previewing -> null
-        playerState is PlayerState.Buffering -> "正在合成试听…"
-        else -> "试听中…"
+    val previewState = when {
+        requestingPreview && playerState is PlayerState.Buffering -> PreviewUiState.Composing
+        requestingPreview && playerState is PlayerState.Playing -> PreviewUiState.Playing
+        previewError != null -> PreviewUiState.Failed
+        else -> PreviewUiState.Idle
+    }
+    val previewStatus = when (previewState) {
+        PreviewUiState.Composing -> "正在合成试听…"
+        PreviewUiState.Playing -> "试听中…"
+        PreviewUiState.Failed -> "试听失败 · 可再试一次"
+        PreviewUiState.Idle -> null
     }
 
     fun toast(message: String) {
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    }
+
+    fun openSystemTtsSettings() {
+        val engine = systemStatus?.engineName?.takeIf { it.isNotBlank() }
+        // 从设置页回来后自动重建引擎：系统里换了发音人，旧会话/旧缓存都要跟着换。
+        settingsOpened = true
+        if (!SystemTtsSettings.open(context, engine)) {
+            settingsOpened = false
+            toast("没有找到系统 TTS 设置页，请到系统设置 → 无障碍 中查找")
+        }
     }
 
     fun buildDraft(): TtsConfig = TtsConfigs.normalizeLibrary(
@@ -231,16 +285,20 @@ fun TtsConfigEditScreen(
             is PlayerState.Buffering, is PlayerState.Playing -> previewSeen = true
 
             is PlayerState.Error -> {
+                // toast 只负责细节；底部状态行让错误留在屏幕上，并给出重试入口。
                 toast("试听失败：${state.message}")
+                previewError = state.message
                 Speech.get().clearError()
                 requestingPreview = false
                 previewSeen = false
+                previewStarted.value = false
             }
 
             PlayerState.Idle -> {
                 if (previewSeen) {
                     requestingPreview = false
                     previewSeen = false
+                    previewStarted.value = false
                 }
             }
 
@@ -255,7 +313,7 @@ fun TtsConfigEditScreen(
 
     fun preview() {
         if (finishing) return
-        if (apiKey.trim().isBlank()) {
+        if (provider.requiresApiKey && apiKey.trim().isBlank()) {
             toast("先填 ${provider.displayName} 的 API Key")
             return
         }
@@ -264,12 +322,38 @@ fun TtsConfigEditScreen(
             toast("MiniMax 还需要选一个音色（可从目录导入或手动填 ID）")
             return
         }
+        if (provider.id == "deepgram" && draft.voice.isBlank()) {
+            toast("Deepgram 还需要选一个音色（Flux / Aura 的 model 字符串）")
+            return
+        }
         requestingPreview = true
         previewSeen = false
+        previewError = null
+        previewStarted.value = true
         Speech.get().speakPreview(
             text = "你好，这是听书的声音测试。",
             config = draft
         )
+    }
+
+    /** 底部胶囊的「停止」：合成中和播放中都走这里，回到 Idle 后还可以立刻再试。 */
+    fun stopPreview() {
+        requestingPreview = false
+        previewSeen = false
+        previewError = null
+        previewStarted.value = false
+        Speech.get().stop()
+    }
+
+    // 试听中直接返回 / 保存 / 删除会离开页面，此时必须自己把试听停掉，
+    // 否则声音继续播，而当前页已经没有停止入口了。
+    DisposableEffect(Unit) {
+        onDispose {
+            if (previewStarted.value) {
+                previewStarted.value = false
+                Speech.get().stop()
+            }
+        }
     }
 
     fun save() {
@@ -278,22 +362,26 @@ fun TtsConfigEditScreen(
             toast("请填写名称")
             return
         }
+        // 没有改动时主按钮是「完成」：直接离开，不写盘，也不谎报「已保存」。
+        if (!isNew && !dirty) {
+            onBack()
+            return
+        }
         finishing = true
         val config = buildDraft().copy(name = name.trim())
+        val activeAfterSave = Settings.state.value.activeConfigId
+        val keepsActive = activeAfterSave.isNotBlank() &&
+            Settings.state.value.configs.any { it.id == activeAfterSave }
         Settings.update { old ->
             val configs = TtsConfigs.replace(old.configs, config)
-            val active = when {
-                enabled -> config.id
-                old.activeConfigId.isNotBlank() && configs.any { it.id == old.activeConfigId } -> {
-                    old.activeConfigId
-                }
-
-                else -> config.id
-            }
+            val active = if (keepsActive) activeAfterSave else config.id
             old.copy(configs = configs, activeConfigId = active)
         }
         Speech.get().applySpeed(Settings.state.value.speed)
-        toast("已保存")
+        toast(
+            if (keepsActive) "已保存；可在阅读页音色里切换使用"
+            else "已保存并设为当前朗读配置"
+        )
         onBack()
     }
 
@@ -356,38 +444,6 @@ fun TtsConfigEditScreen(
                             .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 120.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(20.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surface
-                            )
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(Modifier.weight(1f)) {
-                                    Text("是否启用", style = MaterialTheme.typography.titleMedium)
-                                    TtsHint("同一时间只有一条配置用于朗读；要停用当前配置，请先在列表启用另一条。")
-                                }
-                                Switch(
-                                    checked = enabled,
-                                    onCheckedChange = { want ->
-                                        when {
-                                            !want && isCurrentlyActive -> toast("请先在列表启用另一条配置")
-                                            !want && isNew && settings.configs.isEmpty() ->
-                                                toast("至少要有一条启用的配置")
-
-                                            else -> enabled = want
-                                        }
-                                    }
-                                )
-                            }
-                        }
-
                         TtsFieldCard("名称") {
                             OutlinedTextField(
                                 value = name,
@@ -398,46 +454,107 @@ fun TtsConfigEditScreen(
                             )
                         }
 
-                        TtsFieldCard("API Key") {
-                            OutlinedTextField(
-                                value = apiKey,
-                                onValueChange = { apiKey = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                shape = RoundedCornerShape(12.dp),
-                                visualTransformation = if (showKey) {
-                                    VisualTransformation.None
-                                } else {
-                                    PasswordVisualTransformation()
-                                },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                                trailingIcon = {
-                                    TextButton(onClick = { showKey = !showKey }) {
-                                        Text(if (showKey) "隐藏" else "显示")
+                        if (provider.id == "system") {
+                            TtsFieldCard("系统引擎") {
+                                TtsHint("无需 API Key；使用设备上已安装的 TTS 引擎与离线音色。")
+                                Spacer(Modifier.height(8.dp))
+                                val status = systemStatus
+                                val warning = status != null &&
+                                    (!status.ready || status.chineseVoiceCount == 0)
+                                Text(
+                                    text = when {
+                                        status != null -> status.message
+                                        systemChecking -> "正在检测系统引擎…"
+                                        else -> "尚未检测"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (warning) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                                if (status != null && !status.voiceSwitchSupported) {
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(
+                                        "应用内换音色无效：请用下面的按钮到系统设置里换发音人。",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.tertiary
+                                    )
+                                }
+                                Spacer(Modifier.height(10.dp))
+                                OutlinedButton(
+                                    onClick = { openSystemTtsSettings() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("打开系统 TTS 设置")
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    TextButton(
+                                        onClick = {
+                                            forceRebindNext = true
+                                            statusRefresh += 1
+                                        }
+                                    ) {
+                                        Text("重新检测")
+                                    }
+                                    TextButton(onClick = { showTtsLog = true }) {
+                                        Text("调试日志")
                                     }
                                 }
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            TtsHint("Key 只存本机，不上传、不进备份、不打日志。")
-                        }
+                            }
+                        } else {
+                            TtsFieldCard("API Key") {
+                                OutlinedTextField(
+                                    value = apiKey,
+                                    onValueChange = { apiKey = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    shape = RoundedCornerShape(12.dp),
+                                    visualTransformation = if (showKey) {
+                                        VisualTransformation.None
+                                    } else {
+                                        PasswordVisualTransformation()
+                                    },
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                                    trailingIcon = {
+                                        TextButton(onClick = { showKey = !showKey }) {
+                                            Text(if (showKey) "隐藏" else "显示")
+                                        }
+                                    }
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                TtsHint(
+                                    if (provider.id == "deepgram") {
+                                        "Key 只存本机，不上传、不进备份、不打日志；Deepgram 用 API Key 以 Token 方式鉴权。"
+                                    } else {
+                                        "Key 只存本机，不上传、不进备份、不打日志。"
+                                    }
+                                )
+                            }
 
-                        TtsFieldCard("接口地址") {
-                            OutlinedTextField(
-                                value = baseUrl,
-                                onValueChange = { baseUrl = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                shape = RoundedCornerShape(12.dp),
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            TtsHint(
-                                if (provider.id == "minimax") {
-                                    "完整地址，例如 https://api.minimax.cn/v1/t2a_v2"
-                                } else {
-                                    "完整地址，例如 https://api.xiaomimimo.com/v1/chat/completions"
-                                }
-                            )
+                            TtsFieldCard("接口地址") {
+                                OutlinedTextField(
+                                    value = baseUrl,
+                                    onValueChange = { baseUrl = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    shape = RoundedCornerShape(12.dp),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                TtsHint(
+                                    when (provider.id) {
+                                        "minimax" -> "完整地址，例如 https://api.minimax.cn/v1/t2a_v2"
+                                        "deepgram" -> "填 https://api.deepgram.com 即可；也可填完整的 /v1/speak 或 /v2/speak 地址"
+                                        else -> "完整地址，例如 https://api.xiaomimimo.com/v1/chat/completions"
+                                    }
+                                )
+                            }
+
                         }
 
                         TtsFieldCard("供应商模板") {
@@ -471,7 +588,7 @@ fun TtsConfigEditScreen(
                         modifier = Modifier
                             .fillMaxSize()
                             .verticalScroll(rememberScrollState())
-                            .padding(16.dp),
+                            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 120.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         TtsFieldCard("恢复模板默认值") {
@@ -501,10 +618,10 @@ fun TtsConfigEditScreen(
                             )
                             Spacer(Modifier.height(6.dp))
                             TtsHint(
-                                if (provider.id == "minimax") {
-                                    "语速由服务端处理；播放端固定 1×，避免双重变速。"
-                                } else {
-                                    "语速由播放端处理；改音色会让旧缓存自然失效。"
+                                when (provider.id) {
+                                    "minimax" -> "语速由服务端处理；播放端固定 1×，避免双重变速。"
+                                    "deepgram" -> "Flux 中文音色为 Early Access，数字 / 日期没有文本规整；语速由播放端处理。"
+                                    else -> "语速由播放端处理；改音色会让旧缓存自然失效。"
                                 }
                             )
                         }
@@ -527,23 +644,25 @@ fun TtsConfigEditScreen(
                 }
             }
         }
-        if (tab != 2) {
-            TtsFloatingBar(
-                tab = tab,
-                previewing = previewing,
-                previewStatus = previewStatus,
-                isNew = isNew,
-                finishing = finishing,
-                onPreview = { preview() },
-                onDelete = { showDelete = true },
-                onSave = { save() },
-                onAdd = { showCatalog = true },
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .padding(horizontal = 20.dp, vertical = 12.dp)
-            )
-        }
+        // 三个页签都保留底部条：高级设置里的「恢复默认值」同样需要保存入口。
+        TtsFloatingBar(
+            tab = tab,
+            previewState = previewState,
+            previewStatus = previewStatus,
+            isNew = isNew,
+            dirty = dirty,
+            finishing = finishing,
+            showDelete = tab != 2,
+            onPreview = { preview() },
+            onStopPreview = { stopPreview() },
+            onDelete = { showDelete = true },
+            onSave = { save() },
+            onAdd = { showCatalog = true },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 12.dp)
+        )
     }
 
 
@@ -558,6 +677,10 @@ fun TtsConfigEditScreen(
             onImport = { newModels, newVoices -> importCatalog(newModels, newVoices) },
             onManualAdd = { newModel, newVoice -> manualAdd(newModel, newVoice) }
         )
+    }
+
+    if (showTtsLog) {
+        SystemTtsLogDialog(onDismiss = { showTtsLog = false })
     }
 
     if (showDiscard) {
@@ -581,7 +704,15 @@ fun TtsConfigEditScreen(
         AlertDialog(
             onDismissRequest = { showDelete = false },
             title = { Text("删除配置") },
-            text = { Text("确定删除「${name.ifBlank { initial.name }}」？删除后不可恢复。") },
+            text = {
+                Text(
+                    if (dirty) {
+                        "确定删除「${name.ifBlank { initial.name }}」？删除后不可恢复，当前未保存的改动也会一并丢弃。"
+                    } else {
+                        "确定删除「${name.ifBlank { initial.name }}」？删除后不可恢复。"
+                    }
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
                     showDelete = false

@@ -11,7 +11,7 @@
 **设计取向**
 - 交付优先：能跑通、能装、能上手机，不为架构优雅拖时间。
 - 本地优先：没有账号、没有服务端、没有云同步；Key 只存在本机。
-- 可换供应商：第一家 MiMo，第二家 MiniMax，接口抽象好，加第三家只写一个类。
+- 可换供应商：第一家 MiMo，第二家 MiniMax，后续 OpenAI 兼容与 Deepgram，接口抽象好，加一家只写一个类。
 
 **不是目标**
 在线书源、PDF、iOS、桌面端、应用商店上架、付费订阅、多用户。
@@ -24,11 +24,11 @@
 |---|---|
 | 导入 TXT（UTF-8 / GBK 自动识别）、EPUB（按 spine 顺序 + 插图） | ✅ |
 | 书架、章节列表、按段落记录进度、书签 | ✅ |
-| 云端 TTS：MiMo / MiniMax 两家，多套配置，列表里切换启用 | ✅ |
+| TTS：MiMo / MiniMax / OpenAI 兼容 / Deepgram 四家云端 + 系统 TTS，多套配置，列表里切换启用 | ✅ |
 | 模型 / 音色库：每个配置可存多个，卡片切换当前项，在线/内置目录一键导入 | ✅ |
 | 跨段合并合成（对话体不卡顿）、跨章预取 | ✅ |
 | 后台播放、通知栏 / 锁屏控制、定时关闭 | ✅ |
-| 句级高亮（按播放进度估算）、当前段 3dp 竖条 + 淡底 | ✅ |
+| 排版：字号、行距、段间距、左右边距、字体可调；句级高亮、当前段 3dp 竖条 + 淡底 | ✅ |
 | 断网等待恢复、失败段落跳过并进「待补」 | ✅ |
 | 音频缓存（按内容寻址）、上限清理、缓存本章 | ✅ |
 | 朗读规则（内置 + 导入 JSON 规则包） | ✅ |
@@ -66,7 +66,7 @@
 ┌───────────────▼─────────────┐   ┌────────────────────────────────────┐
 │ playback                    │   │ tts                                │
 │  SpeechPlayer（单例，状态机）│──▶│  ProviderRegistry → TtsProvider     │
-│  PlaybackService（前台服务） │   │    MimoProvider / MiniMaxProvider   │
+│  PlaybackService（前台服务） │   │  Mimo / MiniMax / OpenAI / Deepgram  │
 │  AudioCache（内容寻址缓存）  │   │  ChunkPlanner（跨段合并 + 位置映射） │
 └───────────────┬─────────────┘   │  RulesEngine（文本规整）            │
                 │                 └────────────────────────────────────┘
@@ -133,6 +133,8 @@ app/src/main/java/io/github/mungbean2435/bookvoice/
 │  ├─ SentenceSplitter.kt        句子区间
 │  ├─ mimo/MimoProvider.kt
 │  ├─ minimax/MiniMaxProvider.kt
+│  ├─ openai/OpenAiCompatibleProvider.kt
+│  ├─ deepgram/                  Deepgram（Flux v2 / Aura v1）
 │  └─ rules/                     规则包模型 + 规则引擎
 └─ data/
    ├─ db/                        Db + 数据类
@@ -226,7 +228,7 @@ app/src/main/java/io/github/mungbean2435/bookvoice/
 
 ```kotlin
 interface TtsProvider {
-    val id: String                 // "mimo" / "minimax"
+    val id: String                 // "mimo" / "minimax" / "openai" / "deepgram"
     val displayName: String
     val audioFormat: String        // 决定缓存扩展名
     val defaultConfig: ProviderConfig
@@ -284,7 +286,21 @@ interface TtsProvider {
 - **MiMo 模型**：`GET {origin}/v1/models` best-effort，只接受 `mimo-v2.5-tts`（排除 `voiceclone` / `voicedesign`，这两个需要不同的请求协议）。
 - 目录接口失败、无 Key、超时都回落到内置目录并带 note；UI 可重试，也可手动填模型/音色 ID。
 
-### 8.5 加第三家（例如 GPT-SoVITS）
+### 8.5 Deepgram（Flux TTS / Aura）
+
+- 端点：Flux `POST https://api.deepgram.com/v2/speak`；Aura `POST https://api.deepgram.com/v1/speak`
+- 鉴权：请求头 `Authorization: Token <KEY>`（不是 Bearer）
+- 查询参数：`?model=flux-wenjing-zh&encoding=mp3`；body 只有 `{"text":"文本"}`
+- 响应：直接是音频字节（mp3），不是 JSON；错误才是 JSON（`err_msg` / `message`）
+- 音色就是 model：`flux-{voice}-{lang}` / `aura-{voice}-{lang}`。配置里 `voice` 存完整 model，`model` 只作为引擎系列（Flux TTS / Aura 2 / Aura）显示；合成时优先用 `voice`，其次用能识别的 `model`，最后回落默认音色
+- 端点按音色自动选：`flux-*` → `/v2/speak`，`aura-*` → `/v1/speak`；接口地址只填域名即可，明确写了完整 `/v1/speak` / `/v2/speak` 时保留
+- 中文：Flux 有 9 个普通话 + 4 个台湾国语 + 1 个粤语音色，但属于 **Early Access**，数字 / 日期 / 缩写没有文本规整（不读成中文数字），需要时靠朗读规则包处理
+- 语速：请求里不传 `speed`，由播放端处理（与 MiMo 一致），换语速不重新合成
+- 错误：401/403 → Auth；**402 → Quota**（余额 / 额度不足，必须停止整书朗读）；429 → RateLimited；400 带 length/characters 提示 → TooLong
+- 目录：`GET {origin}/v1/models`，`Authorization: Token`，取 `tts[].canonical_name` 里 `flux-` / `aura-` 开头的项；失败或没有 Key 时用内置目录（中文优先）
+- 不做流式：Deepgram 的流式走 WebSocket，当前项目没有 WebSocket 依赖，整块合成 + 3 块预取已够用
+
+### 8.6 加第 N 家（例如 GPT-SoVITS）
 
 1. 新建 `tts/xxx/XxxProvider.kt`，实现 `TtsProvider`；
 2. 在 `ProviderRegistry.providers` 里注册一行；
@@ -328,7 +344,7 @@ interface TtsProvider {
 | 设置 | 大标题 + 外观三态（跟随系统/浅色/深色）+ 搜索；3 张卡片：语音与播放（TTS / 播放设置 / 规则）、数据（存储缓存 / 导出 / 导入）、支持（诊断 / 保活 / 关于）；子页返回 / 切 tab 后保留滚动位置与折叠状态 |
 | 播放设置 / 存储缓存 / 诊断 | 设置子页：语速与停顿 Slider；缓存用量、上限与清理（确认）；诊断页带设备/配置/播放现场概览、筛选事件流、复制摘要、导出 txt、打标记与清空 |
 | TTS 配置列表 | 搜索、配置卡片（启用状态 / 供应商 / 模型 / 音色）、右上角 +（添加配置 / 添加配置模板）、复制、删除 |
-| TTS 配置详情 | 配置 / 模型与音色 / 高级设置三栏；是否启用、名称、API Key、接口地址、供应商模板；底部为悬浮胶囊：配置页试听/删除/保存，模型与音色页试听/删除/小保存/添加模型与音色，高级设置页不显示；未保存返回确认 |
+| TTS 配置详情 | 配置 / 模型与音色 / 高级设置三栏；名称、API Key（系统引擎无需）、接口地址、供应商模板；底部为中性浮板（连续圆角 + 0.5dp 描边、无投影，唯一彩色是主按钮）：试听 ⇄ 停止（合成中也可中止，失败留在状态行可重试）、删除、主按钮按改动状态在「保存 / 完成」间切换；模型与音色页主按钮换成「添加模型与音色」并保留小保存入口；三个页签都显示该条；未保存返回确认 |
 | 模型与音色 | 模型、音色两个库；卡片显示名称、能力/来源标签、当前项、⋮（设为当前/删除）；添加动作在底部悬浮胶囊 |
 | 可用目录 | 全高 BottomSheet：模型/音色分区、全选/取消全选、勾选、底部筛选、导入选中；在线失败回落内置，可手动输入 |
 | 规则包 | 内置包与导入包的展示、启停、展开看规则、删除 |
@@ -379,6 +395,7 @@ gradle testDebugUnitTest # 全部单测
 | RulesEngineTest | 内置规则、正则、坏正则、指纹变化 |
 | MiniMaxHexTest | hex 解码与非法输入 |
 | ProviderRegistryTest | 注册表与格式声明 |
+| DeepgramProviderTest | 端点选择、model 解析、错误码映射 |
 | TapPolicyTest | 三种点击状态组合 |
 
 **手测清单**
@@ -391,7 +408,7 @@ gradle testDebugUnitTest # 全部单测
 1. **时间是估算**（196ms/字），不是真实音频总时长。
 2. **高亮是估算**，长段落误差 1–2 秒；省略号会被当成句子边界。
 3. **MiMo 每块都走流式**（SSE PCM，边收边播，不自动预取）；MiniMax 等其他供应商仍是整块合成 + 文件播放，保留 3 块预取。
-4. **MiniMax 音色/模型可在线获取**；MiMo 音色只有官方内置 9 个，没有列表接口，模型接口为 best-effort。
+4. **MiniMax / Deepgram 音色模型可在线获取**；MiMo 音色只有官方内置 9 个，没有列表接口，模型接口为 best-effort。Deepgram 中文 Flux 音色仍是 Early Access，不会自动把数字读成中文。
 5. **国产 ROM 可能清后台**，需要用户给「后台运行/自启动」权限。
 6. **`clips` 表预留未用**，缓存清理靠扫描文件。
 7. 多角色、情感、云同步都未实现。

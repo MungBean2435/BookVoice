@@ -553,6 +553,13 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                         overlay.collapse()
                         settingsPage = null
                         selectedTab = AppTab.Settings
+                    },
+                    onEditTtsConfig = { id ->
+                        // 保留阅读页和播放抽屉：编辑完返回仍回到正在听的位置。
+                        editorAnchorValid = false
+                        editorConfigId = id
+                        editorTemplateId = ""
+                        editorOpen = true
                     }
                 )
             }

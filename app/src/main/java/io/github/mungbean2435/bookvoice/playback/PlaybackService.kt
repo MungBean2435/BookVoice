@@ -34,6 +34,9 @@ class PlaybackService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
+        // 先用不依赖 MediaSession 的占位通知满足前台服务 5 秒窗口，
+        // 等 session 建好后再换成带媒体控制的通知。
+        startForeground(NOTIFICATION_ID, buildPlaceholder())
 
         session = MediaSession(this, "bookvoice").apply {
             setCallback(object : MediaSession.Callback() {
@@ -59,6 +62,9 @@ class PlaybackService : Service() {
             )
             isActive = true
         }
+
+        // 换成正式通知；此时 sessionToken 已可用。
+        startForeground(NOTIFICATION_ID, buildNotification(Speech.get().state.value))
 
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Main).also { sc ->
             renderJob = sc.launch {
@@ -124,6 +130,16 @@ class PlaybackService : Service() {
                 .build()
         )
     }
+
+    private fun buildPlaceholder(): Notification =
+        Notification.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentTitle("书声")
+            .setContentText("准备播放")
+            .setContentIntent(contentIntent())
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .build()
 
     private fun buildNotification(state: PlayerState): Notification {
         val player = Speech.get()

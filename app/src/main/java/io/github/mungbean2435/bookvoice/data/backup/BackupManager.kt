@@ -92,6 +92,10 @@ class BackupManager(private val context: Context) {
                 put("cacheLimitMb", settings.cacheLimitMb)
                 put("builtinRulesEnabled", settings.builtinRulesEnabled)
                 put("fontSizeSp", settings.fontSizeSp)
+                put("readingLineHeight", settings.readingLineHeight.toDouble())
+                put("readingParagraphSpacingDp", settings.readingParagraphSpacingDp)
+                put("readingHorizontalPaddingDp", settings.readingHorizontalPaddingDp)
+                put("readingFontFamily", settings.readingFontFamily)
                 put("tapToRead", settings.tapToRead)
                 put("themeMode", settings.themeMode.prefValue)
             }
@@ -196,6 +200,22 @@ class BackupManager(private val context: Context) {
                         old.builtinRulesEnabled
                     ),
                     fontSizeSp = saved.optInt("fontSizeSp", old.fontSizeSp),
+                    readingLineHeight = saved.optDouble(
+                        "readingLineHeight",
+                        old.readingLineHeight.toDouble()
+                    ).toFloat(),
+                    readingParagraphSpacingDp = saved.optInt(
+                        "readingParagraphSpacingDp",
+                        old.readingParagraphSpacingDp
+                    ),
+                    readingHorizontalPaddingDp = saved.optInt(
+                        "readingHorizontalPaddingDp",
+                        old.readingHorizontalPaddingDp
+                    ),
+                    readingFontFamily = saved.optString(
+                        "readingFontFamily",
+                        old.readingFontFamily
+                    ),
                     tapToRead = saved.optBoolean("tapToRead", old.tapToRead),
                     themeMode = ThemeMode.from(
                         saved.optString("themeMode", old.themeMode.prefValue)

@@ -103,7 +103,6 @@ data class BookVoiceReadingTokens(
     val chromeVerticalPadding: Dp = 8.dp,
     val chromeElevation: Dp = 8.dp,
     val miniBarProgressHeight: Dp = 3.dp,
-    val playbackSheetHeightFraction: Float = 0.56f
 )
 
 /**

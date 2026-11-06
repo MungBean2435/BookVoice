@@ -113,6 +113,34 @@ internal fun pageSlideExit(): ExitTransition =
         )
     ) { width -> width }
 
+/** 播放抽屉内子页（音色 / 定时 / 离线缓存）的横滑时长；高度同步用同一段时长，避免先滑完再跳高。 */
+internal const val SHEET_PAGE_SLIDE_MILLIS = 300
+
+/**
+ * 播放抽屉内的子页转场：播放设置 ↔ 音色 / 定时 / 离线缓存。
+ *
+ * 抽屉只有一页宽，整页横滑会在两侧露出空底，所以只做四分之一宽的视差滑入，
+ * 旧页反向让出十分之一宽；进出都带淡入淡出，高度由 SizeTransform 同步补间。
+ * 缓动沿用设置子页的 [TabEasing]，进出方向由 [forward] 决定，返回就是原路滑回。
+ */
+internal fun playerSheetPageTransform(forward: Boolean): ContentTransform {
+    val direction = if (forward) 1 else -1
+    val slideSpec = tween<IntOffset>(SHEET_PAGE_SLIDE_MILLIS, easing = TabEasing)
+    return ContentTransform(
+        targetContentEnter = slideInHorizontally(slideSpec) { width ->
+            direction * (width / 4)
+        } + fadeIn(tween(durationMillis = 240, easing = TabEasing)),
+        initialContentExit = slideOutHorizontally(slideSpec) { width ->
+            -direction * (width / 10)
+        } + fadeOut(tween(durationMillis = 160, easing = TabEasing)),
+        // 新页叠在旧页上方，视差过程中不会从缝里看到底下的旧页。
+        targetContentZIndex = 1f,
+        sizeTransform = SizeTransform(clip = true) { _, _ ->
+            tween(SHEET_PAGE_SLIDE_MILLIS, easing = TabEasing)
+        }
+    )
+}
+
 /**
  * 场景活跃态包装：转场中的旧页、被播放 overlay 盖住的 tab 一律不接收触摸，
  * 并从无障碍树移除，避免焦点跑到屏幕外。

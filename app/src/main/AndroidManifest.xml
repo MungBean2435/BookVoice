@@ -7,6 +7,23 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!--
+      Android 11+（targetSdk 30+）的包可见性限制：不声明 TTS_SERVICE 时，
+      TextToSpeech 可能找不到系统引擎，getEngines()/getVoices() 也会返回空。
+      设置页动作一并声明，方便「打开系统 TTS 设置」可靠跳转。
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <intent>
+            <action android:name="android.settings.TTS_SETTINGS" />
+        </intent>
+        <intent>
+            <action android:name="com.android.settings.TTS_SETTINGS" />
+        </intent>
+    </queries>
+
     <application
         android:name=".App"
         android:allowBackup="false"

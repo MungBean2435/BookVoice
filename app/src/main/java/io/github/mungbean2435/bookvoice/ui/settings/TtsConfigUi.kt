@@ -40,12 +40,23 @@ fun ProviderAvatar(
         "minimax" -> MaterialTheme.colorScheme.secondaryContainer to
             MaterialTheme.colorScheme.onSecondaryContainer
 
+        "openai" -> MaterialTheme.colorScheme.tertiaryContainer to
+            MaterialTheme.colorScheme.onTertiaryContainer
+
+        "deepgram" -> Color(0xFF0B7A5E) to Color.White
+
+        "system" -> MaterialTheme.colorScheme.surfaceContainerHigh to
+            MaterialTheme.colorScheme.onSurface
+
         else -> MaterialTheme.colorScheme.surfaceContainerHighest to
             MaterialTheme.colorScheme.onSurfaceVariant
     }
     val label = when (providerId) {
         "mimo" -> "M"
         "minimax" -> "MM"
+        "openai" -> "AI"
+        "deepgram" -> "DG"
+        "system" -> "系"
         else -> name.take(1).ifBlank { "T" }
     }
     Box(
@@ -60,32 +71,6 @@ fun ProviderAvatar(
             color = foreground,
             fontWeight = FontWeight.Bold,
             fontSize = (size.value * 0.32f).sp
-        )
-    }
-}
-
-/** 列表里的启用状态徽标：绿色沿用参考图，暗色下用深色底。 */
-@Composable
-fun ConfigStatusChip(active: Boolean, label: String? = null) {
-    val background = if (active) {
-        MaterialTheme.colorScheme.primaryContainer
-    } else {
-        MaterialTheme.colorScheme.surfaceVariant
-    }
-    val foreground = if (active) {
-        MaterialTheme.colorScheme.onPrimaryContainer
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    Surface(
-        color = background,
-        contentColor = foreground,
-        shape = RoundedCornerShape(50)
-    ) {
-        Text(
-            text = label ?: if (active) "启用" else "未启用",
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-            style = MaterialTheme.typography.labelSmall
         )
     }
 }

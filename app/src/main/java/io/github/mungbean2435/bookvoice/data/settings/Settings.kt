@@ -20,6 +20,10 @@ data class TtsSettings(
     val cacheLimitMb: Int = 512,
     val builtinRulesEnabled: Boolean = true,
     val fontSizeSp: Int = 17,
+    val readingLineHeight: Float = 1.7f,
+    val readingParagraphSpacingDp: Int = 10,
+    val readingHorizontalPaddingDp: Int = 20,
+    val readingFontFamily: String = "system",
     val tapToRead: Boolean = false,
     val themeMode: ThemeMode = ThemeMode.FollowSystem
 ) {
@@ -90,6 +94,10 @@ object Settings {
             .putInt("cacheLimitMb", next.cacheLimitMb)
             .putBoolean("builtinRulesEnabled", next.builtinRulesEnabled)
             .putInt("fontSizeSp", next.fontSizeSp)
+            .putFloat("readingLineHeight", next.readingLineHeight)
+            .putInt("readingParagraphSpacingDp", next.readingParagraphSpacingDp)
+            .putInt("readingHorizontalPaddingDp", next.readingHorizontalPaddingDp)
+            .putString("readingFontFamily", next.readingFontFamily)
             .putBoolean("tapToRead", next.tapToRead)
             .putString("themeMode", next.themeMode.prefValue)
             .apply()
@@ -118,6 +126,10 @@ object Settings {
             .putInt("cacheLimitMb", next.cacheLimitMb)
             .putBoolean("builtinRulesEnabled", next.builtinRulesEnabled)
             .putInt("fontSizeSp", next.fontSizeSp)
+            .putFloat("readingLineHeight", next.readingLineHeight)
+            .putInt("readingParagraphSpacingDp", next.readingParagraphSpacingDp)
+            .putInt("readingHorizontalPaddingDp", next.readingHorizontalPaddingDp)
+            .putString("readingFontFamily", next.readingFontFamily)
             .putBoolean("tapToRead", next.tapToRead)
             .putString("themeMode", next.themeMode.prefValue)
         val ok = editor.commit()
@@ -169,6 +181,19 @@ object Settings {
             cacheLimitMb = prefs.getInt("cacheLimitMb", defaults.cacheLimitMb),
             builtinRulesEnabled = prefs.getBoolean("builtinRulesEnabled", defaults.builtinRulesEnabled),
             fontSizeSp = prefs.getInt("fontSizeSp", defaults.fontSizeSp),
+            readingLineHeight = prefs.getFloat("readingLineHeight", defaults.readingLineHeight),
+            readingParagraphSpacingDp = prefs.getInt(
+                "readingParagraphSpacingDp",
+                defaults.readingParagraphSpacingDp
+            ),
+            readingHorizontalPaddingDp = prefs.getInt(
+                "readingHorizontalPaddingDp",
+                defaults.readingHorizontalPaddingDp
+            ),
+            readingFontFamily = prefs.getString(
+                "readingFontFamily",
+                defaults.readingFontFamily
+            ) ?: defaults.readingFontFamily,
             tapToRead = prefs.getBoolean("tapToRead", defaults.tapToRead),
             themeMode = ThemeMode.from(prefs.getString("themeMode", null))
         )

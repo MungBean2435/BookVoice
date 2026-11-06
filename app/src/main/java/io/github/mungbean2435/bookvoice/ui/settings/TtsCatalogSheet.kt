@@ -44,12 +44,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mungbean2435.bookvoice.tts.ProviderConfig
 import io.github.mungbean2435.bookvoice.tts.TtsCatalog
 import io.github.mungbean2435.bookvoice.tts.TtsProvider
 import io.github.mungbean2435.bookvoice.tts.Voice
+import io.github.mungbean2435.bookvoice.tts.system.SystemTtsSettings
 
 /**
  * 参考图 2 的「可用模型」底部弹层，TTS 版同时包含模型和音色。
@@ -67,6 +69,7 @@ fun TtsCatalogSheet(
     onImport: (List<String>, List<Voice>) -> Unit,
     onManualAdd: (String, String) -> Unit
 ) {
+    val context = LocalContext.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var loading by remember { mutableStateOf(true) }
     var catalog by remember { mutableStateOf<TtsCatalog?>(null) }
@@ -78,7 +81,8 @@ fun TtsCatalogSheet(
 
     LaunchedEffect(reload, provider.id, apiKey, baseUrl) {
         loading = true
-        val result = if (apiKey.trim().isBlank()) {
+        // 系统 TTS 本来就没有 Key：它必须走 fetchCatalog 才能读到引擎里的真实音色。
+        val result = if (provider.requiresApiKey && apiKey.trim().isBlank()) {
             provider.builtinCatalog().copy(
                 note = "未填 Key，使用内置目录；填 Key 后可自动获取账号音色"
             )
@@ -96,8 +100,9 @@ fun TtsCatalogSheet(
         val availableModels = result.models
             .filterNot { it in existingModels }
             .distinct()
+        // 空 id 是「系统默认」占位，导入不到音色库里；这里只展示真实音色。
         val availableVoices = result.voices
-            .filterNot { it.id in existingVoiceIds }
+            .filterNot { it.id.isBlank() || it.id in existingVoiceIds }
             .distinctBy { it.id }
         catalog = result.copy(models = availableModels, voices = availableVoices)
         selectedModels = availableModels.toSet()
@@ -137,6 +142,11 @@ fun TtsCatalogSheet(
             ) {
                 Text("可用模型与音色", style = MaterialTheme.typography.titleLarge)
                 Spacer(Modifier.weight(1f))
+                if (provider.id == "system") {
+                    TextButton(onClick = { SystemTtsSettings.open(context) }) {
+                        Text("系统语音设置")
+                    }
+                }
                 TextButton(
                     onClick = {
                         val current = data ?: return@TextButton

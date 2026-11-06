@@ -64,6 +64,11 @@ fun ModelVoiceTab(
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 120.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        if (provider.id == "deepgram") {
+            item {
+                TtsHint("Deepgram 的 model 字符串就是音色（如 flux-wenjing-zh）；在下面「音色」里选，模型只决定引擎系列。")
+            }
+        }
         item { SectionTitle("模型", models.size) }
         if (models.isEmpty()) {
             item { EmptyLibrary("还没有模型，点下面添加") }
@@ -166,7 +171,11 @@ private fun ModelCard(
                     TagChip("TTS")
                     TagChip(provider.audioFormat)
                     TagChip(modelHint(provider.id, modelId))
-                    if (current) ConfigStatusChip(true, label = "当前")
+                    if (current) TagChip(
+                        "当前",
+                        container = MaterialTheme.colorScheme.primaryContainer,
+                        content = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
                 }
             }
             Box {
@@ -255,7 +264,11 @@ private fun VoiceCard(
                 Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     if (voice.hint.isNotBlank()) TagChip(voice.hint)
-                    if (current) ConfigStatusChip(true, label = "当前")
+                    if (current) TagChip(
+                        "当前",
+                        container = MaterialTheme.colorScheme.primaryContainer,
+                        content = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
                 }
             }
             Box {
@@ -288,6 +301,8 @@ private fun VoiceCard(
 private fun modelHint(providerId: String, modelId: String): String = when {
     providerId == "minimax" && modelId.contains("turbo") -> "极速"
     providerId == "minimax" && modelId.contains("hd") -> "高清"
+    providerId == "deepgram" && modelId.startsWith("Flux") -> "多语种"
+    providerId == "deepgram" && modelId.startsWith("Aura") -> "英文"
     modelId.contains("tts") -> "预置音色"
     else -> "语音"
 }

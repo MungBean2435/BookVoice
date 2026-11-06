@@ -1,11 +1,8 @@
 package io.github.mungbean2435.bookvoice.ui.player
 
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
+import androidx.compose.animation.AnimatedContent
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.findViewTreeOnBackPressedDispatcherOwner
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -26,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -34,21 +32,24 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalBottomSheetProperties
 import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,17 +57,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import io.github.mungbean2435.bookvoice.ui.components.CoverCache
 import io.github.mungbean2435.bookvoice.ui.components.rememberCoverBitmap
+import io.github.mungbean2435.bookvoice.ui.nav.playerSheetPageTransform
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -79,6 +79,7 @@ import io.github.mungbean2435.bookvoice.data.db.Book
 import io.github.mungbean2435.bookvoice.ui.components.FileImage
 import io.github.mungbean2435.bookvoice.ui.theme.BookVoiceDesign
 import io.github.mungbean2435.bookvoice.ui.theme.BookVoiceTheme
+import kotlinx.coroutines.launch
 
 /** 阅读字号范围：最小 12sp，避免 15sp 起步在小屏上仍然偏大。 */
 internal const val MIN_READING_FONT_SP = 12
@@ -96,7 +97,8 @@ internal data class PlayerChromeState(
     val configName: String,
     val sleepText: String,
     val cacheText: String,
-    val cacheRunning: Boolean
+    val cacheRunning: Boolean,
+    val hasError: Boolean = false
 )
 
 /**
@@ -448,106 +450,6 @@ internal fun PlayerBookHeader(
     }
 }
 
-@Composable
-internal fun PlayerBottomBar(
-    state: PlayerChromeState,
-    onSeek: (Float) -> Unit,
-    onSeekFinished: () -> Unit,
-    onToggle: () -> Unit,
-    onPrevChapter: () -> Unit,
-    onPrevBlock: () -> Unit,
-    onNextBlock: () -> Unit,
-    onNextChapter: () -> Unit,
-    onSpeed: () -> Unit,
-    onVoice: () -> Unit,
-    onSleep: () -> Unit,
-    onCache: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Column(modifier.fillMaxWidth()) {
-        if (state.waitingNetwork) {
-            Text(
-                "网络中断，等待恢复…",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
-            )
-        }
-
-        Text(
-            "全书进度 · 时长为估算",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 24.dp, top = 8.dp)
-        )
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                state.elapsed,
-                style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
-                maxLines = 1,
-                modifier = Modifier.widthIn(min = 48.dp)
-            )
-            Slider(
-                value = state.fraction,
-                onValueChange = onSeek,
-                onValueChangeFinished = onSeekFinished,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 8.dp)
-                    .semantics { contentDescription = "全书进度" },
-                colors = SliderDefaults.colors(
-                    thumbColor = MaterialTheme.colorScheme.primary,
-                    activeTrackColor = MaterialTheme.colorScheme.primary,
-                    inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-                    activeTickColor = Color.Transparent,
-                    inactiveTickColor = Color.Transparent
-                )
-            )
-            Text(
-                state.remaining,
-                style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
-                maxLines = 1,
-                textAlign = TextAlign.End,
-                modifier = Modifier.widthIn(min = 56.dp)
-            )
-        }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            TransportButton("上一章", TransportGlyph.PreviousChapter, onPrevChapter)
-            TransportButton("上一段", TransportGlyph.PreviousBlock, onPrevBlock)
-            PlayButton(
-                isPlaying = state.isPlaying,
-                isBuffering = state.isBuffering,
-                onClick = onToggle
-            )
-            TransportButton("下一段", TransportGlyph.NextBlock, onNextBlock)
-            TransportButton("下一章", TransportGlyph.NextChapter, onNextChapter)
-        }
-
-        SecondaryControls(
-            state = state,
-            onSpeed = onSpeed,
-            onVoice = onVoice,
-            onSleep = onSleep,
-            onCache = onCache
-        )
-
-        Spacer(Modifier.height(8.dp))
-    }
-}
-
 /**
  * 阅读页底部悬浮胶囊：封面 + 书名/章节 + 上一段/播放/下一段/收起，
  * 最底部只读进度线。点封面或书名打开半屏播放设置。
@@ -745,17 +647,19 @@ private fun MiniPlayButton(state: PlayerChromeState, onClick: () -> Unit) {
 }
 
 /**
- * 半屏播放设置：语速/音色/定时/缓存本章和完整传输键都在这里，
- * 不再把这一整块常驻在阅读页底部。
+ * 播放设置抽屉：把播放状态、进度、传输键、常用控制和阅读辅助集中在一处。
+ * 这里只负责展示和回调，真正的播放状态仍由 PlayerScreen / SpeechPlayer 持有。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun PlaybackSettingsSheet(
+    page: PlayerSheetPage,
+    onPageChange: (PlayerSheetPage) -> Unit,
     state: PlayerChromeState,
-    autoFollow: Boolean,
-    onResumeFollow: () -> Unit,
-    onSeek: (Float) -> Unit,
-    onSeekFinished: () -> Unit,
+    book: Book?,
+    chapterTitle: String,
+    chapterIndex: Int,
+    chapterCount: Int,
     onToggle: () -> Unit,
     onPrevChapter: () -> Unit,
     onPrevBlock: () -> Unit,
@@ -764,63 +668,413 @@ internal fun PlaybackSettingsSheet(
     onSpeed: () -> Unit,
     onVoice: () -> Unit,
     onSleep: () -> Unit,
-    onCache: () -> Unit,
+    onOpenOffline: () -> Unit,
+    voiceContent: @Composable () -> Unit,
+    sleepContent: @Composable () -> Unit,
+    offlineContent: @Composable () -> Unit,
     onDismiss: () -> Unit
 ) {
     val tokens = BookVoiceDesign.tokens
+    val colors = MaterialTheme.colorScheme
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val sheetHeight = LocalConfiguration.current.screenHeightDp.dp *
-        tokens.reading.playbackSheetHeightFraction
+    val scope = rememberCoroutineScope()
+
+    // 根页返回 = 收起抽屉；子页返回交给页面自己先滑回播放设置。
+    val closeSheet: () -> Unit = {
+        scope.launch { sheetState.hide() }.invokeOnCompletion {
+            if (!sheetState.isVisible) onDismiss()
+        }
+    }
+
+    val statusText = when {
+        state.hasError -> "播放中断"
+        state.waitingNetwork -> "等待网络"
+        state.isBuffering -> "缓冲中"
+        state.isPlaying -> "播放中"
+        else -> "已暂停"
+    }
+    val statusColor = when {
+        state.hasError -> colors.error
+        state.waitingNetwork || state.isBuffering -> colors.tertiary
+        state.isPlaying -> colors.primary
+        else -> colors.onSurfaceVariant
+    }
+
+    val settingsPage: @Composable () -> Unit = {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(bottom = 12.dp)
+        ) {
+            Column(Modifier.padding(horizontal = 20.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "播放设置",
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = onDismiss) { Text("完成") }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(statusColor)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        statusText,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = statusColor
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Surface(
+                        shape = CircleShape,
+                        color = colors.surfaceContainerHigh,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .clickable(role = Role.Button, onClick = onVoice)
+                    ) {
+                        Text(
+                            "音色 · ${state.configName.ifBlank { state.voiceText.ifBlank { "默认" } }}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                PlaybackHeroCompact(
+                    book = book,
+                    chapterTitle = chapterTitle,
+                    chapterIndex = chapterIndex,
+                    chapterCount = chapterCount,
+                    remaining = state.remaining
+                )
+                Spacer(Modifier.height(16.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    LabeledTransportButton(
+                        "上一章",
+                        TransportGlyph.PreviousChapter,
+                        onPrevChapter,
+                        Modifier.weight(1f)
+                    )
+                    LabeledTransportButton(
+                        "上一段",
+                        TransportGlyph.PreviousBlock,
+                        onPrevBlock,
+                        Modifier.weight(1f)
+                    )
+                    SheetPlayButton(
+                        state = state,
+                        onClick = onToggle,
+                        modifier = Modifier.width(64.dp)
+                    )
+                    LabeledTransportButton(
+                        "下一段",
+                        TransportGlyph.NextBlock,
+                        onNextBlock,
+                        Modifier.weight(1f)
+                    )
+                    LabeledTransportButton(
+                        "下一章",
+                        TransportGlyph.NextChapter,
+                        onNextChapter,
+                        Modifier.weight(1f)
+                    )
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    QuickControl(
+                        label = "语速",
+                        value = state.speedText,
+                        onClick = onSpeed,
+                        modifier = Modifier.weight(1f)
+                    )
+                    QuickControl(
+                        label = "音色 · ${state.configName.ifBlank { "配置" }}",
+                        value = state.voiceText,
+                        onClick = onVoice,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    QuickControl(
+                        label = "定时",
+                        value = state.sleepText,
+                        onClick = onSleep,
+                        modifier = Modifier.weight(1f)
+                    )
+                    QuickControl(
+                        label = "离线缓存",
+                        value = state.cacheText,
+                        onClick = onOpenOffline,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+    }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         shape = tokens.sheetShape,
-        containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        containerColor = colors.surfaceContainerLow,
+        // 返回由 SheetPageBackHandler 接管，避免 Android 14 预测性返回把抽屉推走后卡住。
+        properties = ModalBottomSheetProperties(shouldDismissOnBackPress = false)
+    ) {
+        SheetPageBackHandler {
+            if (page == PlayerSheetPage.Settings) closeSheet() else onPageChange(PlayerSheetPage.Settings)
+        }
+        AnimatedContent(
+            targetState = page,
+            transitionSpec = {
+                playerSheetPageTransform(forward = targetState.depth >= initialState.depth)
+            },
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.TopCenter,
+            label = "playerSheetPage"
+        ) { current ->
+            when (current) {
+                PlayerSheetPage.Voice -> voiceContent()
+                PlayerSheetPage.Sleep -> sleepContent()
+                PlayerSheetPage.Offline -> offlineContent()
+                PlayerSheetPage.Settings -> settingsPage()
+            }
+        }
+    }
+}
+
+/**
+ * 播放抽屉里的返回接管。
+ *
+ * M3 的 ModalBottomSheet 在 Android 14 上会先按预测性返回把抽屉推走，再回调
+ * onDismissRequest；如果只翻页不关抽屉，抽屉会停在隐藏态，变成一层点不动的空窗口。
+ * 这里关掉 M3 的返回接管（shouldDismissOnBackPress = false），把返回挂到这张
+ * dialog 自己的 OnBackPressedDispatcher 上：有子页先滑回播放设置，根页才收起抽屉。
+ */
+@Composable
+private fun SheetPageBackHandler(onBack: () -> Unit) {
+    val view = LocalView.current
+    val currentOnBack by rememberUpdatedState(onBack)
+    val dispatcher = remember(view) {
+        view.findViewTreeOnBackPressedDispatcherOwner()?.onBackPressedDispatcher
+    }
+    DisposableEffect(dispatcher) {
+        val callback = object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() = currentOnBack()
+        }
+        dispatcher?.addCallback(callback)
+        onDispose { callback.remove() }
+    }
+}
+
+@Composable
+private fun PlaybackHeroCompact(
+    book: Book?,
+    chapterTitle: String,
+    chapterIndex: Int,
+    chapterCount: Int,
+    remaining: String
+) {
+    val colors = MaterialTheme.colorScheme
+    val tokens = BookVoiceDesign.tokens
+    val coverPx = with(LocalDensity.current) { 96.dp.roundToPx() }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(96.dp)
+                .clip(tokens.coverSmallShape)
+                .background(colors.surfaceContainerHighest),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = book?.title?.take(1) ?: "书",
+                style = MaterialTheme.typography.headlineMedium,
+                color = colors.onSurfaceVariant
+            )
+            book?.coverPath?.let { path ->
+                FileImage(
+                    path = path,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                    targetWidthPx = coverPx
+                )
+            }
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = book?.title ?: "正在播放",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (!book?.author.isNullOrBlank()) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = book.author.orEmpty(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = buildString {
+                    if (chapterCount > 0) {
+                        append("第 ${(chapterIndex + 1).coerceAtMost(chapterCount)} 章")
+                        if (chapterTitle.isNotBlank()) append(" · ")
+                    }
+                    append(chapterTitle.ifBlank { "正文" })
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = "剩余 ${remaining.removePrefix("-")}",
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.primary
+            )
+        }
+    }
+}
+
+@Composable
+private fun LabeledTransportButton(
+    label: String,
+    glyph: TransportGlyph,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        TransportButton(label, glyph, onClick)
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun SheetPlayButton(
+    state: PlayerChromeState,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val label = when {
+        state.isBuffering -> "缓冲中，点按暂停"
+        state.isPlaying -> "暂停"
+        else -> "播放"
+    }
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            modifier = Modifier
+                .size(56.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primary)
+                .clickable(role = Role.Button, onClick = onClick)
+                .semantics { contentDescription = label },
+            contentAlignment = Alignment.Center
+        ) {
+            TransportGlyphIcon(
+                glyph = if (state.isPlaying || state.isBuffering) {
+                    TransportGlyph.Pause
+                } else {
+                    TransportGlyph.Play
+                },
+                tint = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+        Text(
+            if (state.isPlaying || state.isBuffering) "暂停" else "播放",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun QuickControl(
+    label: String,
+    value: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(16.dp)
+    Surface(
+        modifier = modifier.heightIn(min = 64.dp),
+        shape = shape,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(sheetHeight)
-                .navigationBarsPadding()
-                .verticalScroll(rememberScrollState())
-                .padding(bottom = 8.dp)
+                .clip(shape)
+                .clickable(role = Role.Button, onClick = onClick)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.Center
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "播放设置",
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.weight(1f)
-                )
-                TextButton(onClick = onDismiss) { Text("完成") }
-            }
-            if (!autoFollow) {
-                FilledTonalButton(
-                    onClick = onResumeFollow,
-                    modifier = Modifier
-                        .padding(horizontal = 24.dp)
-                        .heightIn(min = 48.dp)
-                ) {
-                    Text("回到朗读", style = MaterialTheme.typography.labelMedium)
-                }
-            }
-            PlayerBottomBar(
-                state = state,
-                onSeek = onSeek,
-                onSeekFinished = onSeekFinished,
-                onToggle = onToggle,
-                onPrevChapter = onPrevChapter,
-                onPrevBlock = onPrevBlock,
-                onNextBlock = onNextBlock,
-                onNextChapter = onNextChapter,
-                onSpeed = onSpeed,
-                onVoice = onVoice,
-                onSleep = onSleep,
-                onCache = onCache
+            Text(
+                label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                value.ifBlank { "—" },
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -848,159 +1102,19 @@ private fun TransportButton(
     }
 }
 
-@Composable
-private fun PlayButton(
-    isPlaying: Boolean,
-    isBuffering: Boolean,
-    onClick: () -> Unit
-) {
-    val label = when {
-        isBuffering -> "缓冲中，点按暂停"
-        isPlaying -> "暂停"
-        else -> "播放"
-    }
-    Box(Modifier.size(72.dp), contentAlignment = Alignment.Center) {
-        if (isBuffering) {
-            val transition = rememberInfiniteTransition(label = "buffer")
-            val angle by transition.animateFloat(
-                initialValue = 0f,
-                targetValue = 360f,
-                animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)),
-                label = "angle"
-            )
-            val ringColor = MaterialTheme.colorScheme.primary
-            Canvas(Modifier.size(72.dp)) {
-                drawArc(
-                    color = ringColor.copy(alpha = 0.25f),
-                    startAngle = 0f,
-                    sweepAngle = 360f,
-                    useCenter = false,
-                    style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
-                )
-                drawArc(
-                    color = ringColor,
-                    startAngle = angle,
-                    sweepAngle = 270f,
-                    useCenter = false,
-                    style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
-                )
-            }
-        }
-        Box(
-            modifier = Modifier
-                .size(64.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary)
-                .clickable(role = Role.Button, onClick = onClick)
-                .semantics { contentDescription = label },
-            contentAlignment = Alignment.Center
-        ) {
-            TransportGlyphIcon(
-                glyph = if (isPlaying || isBuffering) TransportGlyph.Pause else TransportGlyph.Play,
-                tint = MaterialTheme.colorScheme.onPrimary,
-                modifier = Modifier.size(24.dp)
-            )
-        }
-    }
-}
-
-private data class SecondaryItem(
-    val label: String,
-    val value: String,
-    val onClick: () -> Unit
-)
-
-@Composable
-private fun SecondaryControls(
-    state: PlayerChromeState,
-    onSpeed: () -> Unit,
-    onVoice: () -> Unit,
-    onSleep: () -> Unit,
-    onCache: () -> Unit
-) {
-    val items = listOf(
-        SecondaryItem("语速", state.speedText, onSpeed),
-        SecondaryItem(
-            if (state.configName.isBlank()) "音色" else "音色 · ${state.configName}",
-            state.voiceText,
-            onVoice
-        ),
-        SecondaryItem("定时", state.sleepText, onSleep),
-        SecondaryItem(
-            if (state.cacheRunning) "停止缓存" else "缓存本章",
-            state.cacheText,
-            onCache
-        )
-    )
-    val twoColumns = LocalDensity.current.fontScale > 1.3f
-
-    if (!twoColumns) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items.forEach { item ->
-                SecondaryControl(item, Modifier.weight(1f))
-            }
-        }
-    } else {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items.chunked(2).forEach { row ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    row.forEach { item ->
-                        SecondaryControl(item, Modifier.weight(1f))
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SecondaryControl(item: SecondaryItem, modifier: Modifier) {
-    Column(
-        modifier = modifier
-            .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .clickable(role = Role.Button, onClick = item.onClick)
-            .padding(horizontal = 8.dp, vertical = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(
-            item.label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center
-        )
-        Text(
-            item.value,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center
-        )
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ReadingSettingsSheet(
     fontSizeSp: Int,
+    lineHeight: Float,
+    paragraphSpacingDp: Int,
+    horizontalPaddingDp: Int,
+    fontFamily: String,
     onFontSizeChange: (Int) -> Unit,
+    onLineHeightChange: (Float) -> Unit,
+    onParagraphSpacingChange: (Int) -> Unit,
+    onHorizontalPaddingChange: (Int) -> Unit,
+    onFontFamilyChange: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(
@@ -1010,6 +1124,8 @@ internal fun ReadingSettingsSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
                 .padding(horizontal = 24.dp)
                 .padding(bottom = 24.dp)
         ) {
@@ -1053,6 +1169,54 @@ internal fun ReadingSettingsSheet(
 
             HorizontalDivider()
 
+            ReadingSliderRow(
+                title = "行距",
+                valueText = String.format(java.util.Locale.US, "%.1f×", lineHeight),
+                value = lineHeight,
+                range = 1.3f..2.2f,
+                onValueChange = onLineHeightChange
+            )
+            ReadingSliderRow(
+                title = "段间距",
+                valueText = "$paragraphSpacingDp dp",
+                value = paragraphSpacingDp.toFloat(),
+                range = 0f..24f,
+                onValueChange = { onParagraphSpacingChange(it.toInt()) }
+            )
+            ReadingSliderRow(
+                title = "左右边距",
+                valueText = "$horizontalPaddingDp dp",
+                value = horizontalPaddingDp.toFloat(),
+                range = 12f..36f,
+                onValueChange = { onHorizontalPaddingChange(it.toInt()) }
+            )
+
+            Text(
+                "字体",
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.padding(top = 16.dp)
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf(
+                    "system" to "系统",
+                    "serif" to "衬线",
+                    "sans" to "无衬线"
+                ).forEach { (value, label) ->
+                    FilterChip(
+                        selected = fontFamily == value,
+                        onClick = { onFontFamilyChange(value) },
+                        label = { Text(label) }
+                    )
+                }
+            }
+
+            HorizontalDivider(Modifier.padding(top = 16.dp))
+
             Text(
                 "点读开关在顶栏书签旁边：图标亮起时，点击正文从该段开始朗读。",
                 style = MaterialTheme.typography.bodySmall,
@@ -1060,6 +1224,35 @@ internal fun ReadingSettingsSheet(
                 modifier = Modifier.padding(top = 12.dp)
             )
         }
+    }
+}
+
+@Composable
+private fun ReadingSliderRow(
+    title: String,
+    valueText: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    onValueChange: (Float) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+            Text(
+                valueText,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        Slider(
+            value = value.coerceIn(range.start, range.endInclusive),
+            onValueChange = onValueChange,
+            valueRange = range
+        )
     }
 }
 

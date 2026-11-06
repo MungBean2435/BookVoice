@@ -38,9 +38,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.mungbean2435.bookvoice.data.settings.AppInfo
@@ -57,6 +59,7 @@ import io.github.mungbean2435.bookvoice.playback.DiagnosticLevel
 import io.github.mungbean2435.bookvoice.playback.PlayerState
 import io.github.mungbean2435.bookvoice.playback.Speech
 import io.github.mungbean2435.bookvoice.tts.ProviderRegistry
+import io.github.mungbean2435.bookvoice.tts.system.SystemTtsLog
 import io.github.mungbean2435.bookvoice.ui.components.BookVoicePageScaffold
 import io.github.mungbean2435.bookvoice.ui.components.LocalFloatingChromeReserve
 import io.github.mungbean2435.bookvoice.ui.nav.PageChromeState
@@ -238,7 +241,9 @@ fun DiagnosticsScreen(onBack: () -> Unit, state: PageChromeState) {
     var cache by remember { mutableStateOf(CacheStats(0, 0)) }
     var filter by remember { mutableStateOf(DiagFilter.All) }
     var showClear by remember { mutableStateOf(false) }
+    var showTtsLog by remember { mutableStateOf(false) }
     var refreshTick by remember { mutableIntStateOf(0) }
+    val ttsLogLines by SystemTtsLog.lines.collectAsStateWithLifecycle()
 
     LaunchedEffect(refreshTick) {
         cache = withContext(Dispatchers.IO) { speech.cacheStats() }
@@ -271,15 +276,22 @@ fun DiagnosticsScreen(onBack: () -> Unit, state: PageChromeState) {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val latestCache = speech.cacheStats()
-                    val text = exportText(
-                        buildDiagnosticsSnapshot(
-                            context = context,
-                            diagnostics = speech.diagnostics.value,
-                            playerState = speech.state.value,
-                            waitingNetwork = speech.waitingNetwork.value,
-                            cacheStats = latestCache
+                    val text = buildString {
+                        append(
+                            exportText(
+                                buildDiagnosticsSnapshot(
+                                    context = context,
+                                    diagnostics = speech.diagnostics.value,
+                                    playerState = speech.state.value,
+                                    waitingNetwork = speech.waitingNetwork.value,
+                                    cacheStats = latestCache
+                                )
+                            )
                         )
-                    )
+                        // 系统 TTS 的引擎返回码只有在专属日志里才看得到，一起导出。
+                        append("\n\n===== 系统 TTS 调试日志 =====\n")
+                        append(SystemTtsLog.text())
+                    }
                     val stream = context.contentResolver.openOutputStream(uri)
                         ?: error("无法打开导出文件")
                     stream.bufferedWriter().use { it.write(text) }
@@ -484,6 +496,35 @@ fun DiagnosticsScreen(onBack: () -> Unit, state: PageChromeState) {
             }
             item { Spacer(Modifier.height(12.dp)) }
             item {
+                SettingsCard {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("系统 TTS 调试日志", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                if (ttsLogLines.isEmpty()) {
+                                    "还没有日志；试听或播放系统 TTS 后生成"
+                                } else {
+                                    "${ttsLogLines.size} 条 · ${ttsLogLines.last().take(120)}"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        OutlinedButton(onClick = { showTtsLog = true }) {
+                            Text("查看")
+                        }
+                    }
+                }
+            }
+            item { Spacer(Modifier.height(12.dp)) }
+            item {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -578,9 +619,16 @@ fun DiagnosticsScreen(onBack: () -> Unit, state: PageChromeState) {
                 }
             }
             item {
-                SettingsNote("诊断只保存在本次运行内，退出应用后清零；复制和导出不含 API Key、服务地址、书名和正文。")
+                SettingsNote(
+                    "播放事件只保存在本次运行内；系统 TTS 日志会写入本机文件，重启后仍可查看。" +
+                        "复制和导出不含 API Key、服务地址、书名和正文。"
+                )
             }
         }
+    }
+
+    if (showTtsLog) {
+        SystemTtsLogDialog(onDismiss = { showTtsLog = false })
     }
 
     if (showClear) {

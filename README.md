@@ -2,7 +2,7 @@
 
 > 风声雨声读书声，声声入耳。
 
-**书声（BookVoice）** 是一个 Android 本地听书 App：把 TXT / EPUB 导入书库，用你自己配置的云端 TTS 连续朗读；也可以当成阅读器，滚动看正文和插图，点哪句就从哪句开始听。
+**书声（BookVoice）** 是一个 Android 本地听书 App：把 TXT / EPUB 导入书库，用你自己配置的云端或系统 TTS 连续朗读；也可以当成阅读器，滚动看正文和插图，点哪句就从哪句开始听。
 
 没有账号，没有服务端，没有云同步。书只在本机解析、保存，只有待朗读的文字片段会发送给你选择的 TTS 供应商。
 
@@ -16,7 +16,7 @@
 
 ## 它是什么
 
-- **听书**：两家云端 TTS，按段落连续朗读，支持后台播放、锁屏控制、定时关闭。
+- **听书**：四家云端 TTS（MiMo / MiniMax / OpenAI 兼容 / Deepgram）加系统 TTS，按段落连续朗读，支持后台播放、锁屏控制、定时关闭。
 - **阅读器**：TXT / EPUB 排版成连续正文，保留插图；当前朗读段高亮，点句起听。
 - **本地书库**：导入、封面、书签、进度、缓存都在本机；API Key 只存在应用私有目录。
 - **纸感界面**：Jetpack Compose、动态取色、浮动导航胶囊、液态玻璃与页面变形。
@@ -33,7 +33,7 @@
   <img src="docs/screenshots/toc.png" width="46%" alt="分卷目录">
   <img src="docs/screenshots/playback.png" width="46%" alt="播放设置">
 </p>
-<p align="center"><sub>分卷目录 · 播放设置（进度、语速、音色、定时、缓存本章）</sub></p>
+<p align="center"><sub>分卷目录 · 播放设置（紧凑封面头、传输键、语速、音色、定时、离线缓存）</sub></p>
 
 ## 功能
 
@@ -51,19 +51,19 @@
 - 目录页是一张完整的书页：顶部封面、书名、作者、章节数；有分卷时按卷折叠，当前卷自动展开，当前章高亮并滚动到可见位置。
 - EPUB 优先读 EPUB3 `nav` / EPUB2 `NCX` 的层级目录；没有目录信息时从章节标题兜底。TXT 识别「第 X 卷 / 部 / 篇 / 集」等卷标题。
 - 阅读进度按章、段记录；暂停或纯手动阅读 700ms 后也会落库，下次从上次的位置继续。
-- 阅读字号可调；点正文任意一句，从该句开始朗读。
+- 阅读设置可调字号、行距、段间距、左右边距和字体（系统 / 衬线 / 无衬线）；点正文任意一句，从该句开始朗读。
 
 ### 朗读
 
-- 当前内置两家云端 TTS：**小米 MiMo**（wav，支持 PCM 流式）与 **MiniMax**（mp3）。路线图会扩展系统 TTS、离线音色与更多云端供应商；每家可存多套配置，列表里切换启用。
+- 当前内置四家云端 TTS：**小米 MiMo**（wav，支持 PCM 流式）、**MiniMax**（mp3）、**OpenAI 兼容**（mp3，可填 OpenAI / 兼容网关的 `/audio/speech` 地址）与 **Deepgram**（mp3，Flux 中文 / 英文与 Aura 音色）；另支持 **系统 TTS**，直接使用设备已安装引擎与离线音色。每家可存多套配置，在阅读页的音色面板里切换使用。
 - 每个配置可保存多个模型 / 音色；支持内置目录和账号在线目录，在线获取失败自动回落到内置列表。
 - 合成按块进行：首块 ≤150 字，后续目标 400 字，跨段合并，对话体不会一段一停。
-- MiMo 每块边收边播，首包通常 1 秒左右到达；MiniMax 走整块合成。
+- MiMo 每块边收边播，首包通常 1 秒左右到达；MiniMax、OpenAI 兼容、Deepgram 与系统 TTS 走整块合成。
 - 播放当前块时预取下一块，章末提前预取下一章。
 - 断网不跳段：进入等待（最多 10 分钟），网络恢复后继续；合成失败会区分 Key 错误、限流、超长，Key 错不反复重试。
 - 失败块跳过并记入「待补段落」，可以逐条跳转或删除；播放错误会留下常驻提示条，可手动重试或关闭。
 - 朗读规则内置省略号、破折号、百分号、摄氏度等清理；支持导入自定义 JSON 规则包。
-- 语速、音色、定时关闭（15 / 30 / 45 / 60 分钟）在播放面板里调；睡眠倒计时实时更新。
+- 语速、音色、定时关闭在播放面板里调；睡眠支持 1 分钟到 8 小时或「本章结束」，倒计时实时更新。
 
 ### 播放与缓存
 
@@ -74,7 +74,7 @@
 
 ### 备份与诊断
 
-- 备份导出 / 导入：阅读进度、书签、朗读规则、设置；**不含**书文件和 API Key。
+- 备份导出 / 导入：阅读进度、书签、朗读规则、阅读排版与设置；**不含**书文件和 API Key。
 - 导入是合并式的：只更新本机已有的书，本机没有的书跳过并提示，不会清空现有书库。
 - 设置 → 诊断：结构化播放事件（等级 / 标签），可按播放、合成、网络、问题筛选；顶部有设备、版本、供应商、模型、缓存等概览。
 - 诊断支持复制摘要、导出文本、记录标记、清空；导出内容经过脱敏，不含 API Key、服务地址、书名和正文。
@@ -93,7 +93,7 @@
 
 | 版本 | 主题 | 主要内容 |
 |---|---|---|
-| **3.5.0** | 听书控制台与基础 TTS | 播放抽屉重排；系统 TTS 与离线音色；OpenAI 兼容供应商；阅读排版（行距 / 段距 / 边距 / 字体 / 背景）；屏幕常亮；睡眠「播完本章」；书架搜索 / 排序 / 继续听；顶栏减负 |
+| **3.5.0** | 听书控制台与基础 TTS | 播放抽屉重排；系统 TTS 与离线音色；OpenAI 兼容与 Deepgram 供应商；阅读排版（行距 / 段距 / 边距 / 字体 / 背景）；屏幕常亮；睡眠「播完本章」；书架搜索 / 排序 / 继续听；顶栏减负 |
 | **3.6.0** | 云端扩展与离线 | ElevenLabs、Azure Speech、Google Cloud TTS；整书 / 下一章下载队列；缓存索引与按书清理；API Key 加密；无障碍与大字体；备份增强；通知栏章节控制；章节内搜索 |
 | **3.7.0** | 本地与同步 | 本地神经 TTS 模型包（sherpa-onnx）；火山 / 阿里 / 腾讯供应商；每本书独立语速 / 音色；阅读统计；WebDAV 同步 |
 | **长期** | 持续完善 | 更多本地模型格式、跨设备同步、性能基线与更多无障碍能力 |
@@ -153,7 +153,7 @@ keyPassword=******
 app/src/main/java/io/github/mungbean2435/bookvoice/
 ├─ ui/         Compose 界面：书架、正文、目录、播放、书签、设置、导航、液态玻璃
 ├─ data/       SQLite、TXT / EPUB 解析（含分卷）、书库仓储、设置、备份、诊断
-├─ tts/        TTS 供应商（MiMo / MiniMax）、分块、规则包、音色目录
+├─ tts/        TTS 供应商（MiMo / MiniMax / OpenAI 兼容 / Deepgram / 系统 TTS）、分块、规则包、音色目录
 └─ playback/   前台服务、ExoPlayer 播放内核、流式音频、进度与缓存
 ```
 
@@ -162,7 +162,7 @@ app/src/main/java/io/github/mungbean2435/bookvoice/
 ## 数据与隐私
 
 - 书籍内容只在本机解析与存储，不上传服务器；没有账号，也没有统计 SDK。
-- 文字片段会发送到你**自己配置**的 TTS 供应商（MiniMax / 小米 MiMo），用你自己的 Key 计费，请阅读对应服务条款。
+- 文字片段会发送到你**自己配置**的云端 TTS 供应商（MiniMax / 小米 MiMo / OpenAI 兼容 / Deepgram），用你自己的 Key 计费，请阅读对应服务条款；选择系统 TTS 时，文字由设备本地引擎朗读。
 - TTS Key 存在本机私有目录（SharedPreferences），不进日志、不进备份、不进仓库。
 - `android:allowBackup="false"`，应用数据不进系统备份。
 - 诊断导出只含版本、设备、配置名和播放事件，不含 Key、服务地址、书名和正文。
@@ -170,7 +170,7 @@ app/src/main/java/io/github/mungbean2435/bookvoice/
 
 ## 已知限制
 
-- 需要联网使用云端 TTS；没有内置离线语音，也没有内置免费额度。系统 TTS、本地模型包、下载队列尚未实现，见[路线图](#路线图)。
+- 云端 TTS 需要联网；系统 TTS 依赖设备已安装的引擎与音色，离线能力由该引擎决定。本地模型包、整书下载队列尚未实现，见[路线图](#路线图)。
 - 不支持 DRM EPUB、固定版式（fixed-layout）EPUB 和 PDF。
 - 目录分卷依赖导入时解析出的卷信息；旧书需要重新导入。
 - 目前只有 Android 端，没有 iOS / 桌面端，也不在应用商店上架。
@@ -204,11 +204,12 @@ app/src/main/java/io/github/mungbean2435/bookvoice/
 
 ## English
 
-**BookVoice / 书声** is a local-first Android audiobook player and reader. Import TXT or EPUB, and it reads the book aloud through a TTS provider you configure (Xiaomi MiMo or MiniMax). The reader keeps the whole book in one continuous scroll, highlights the current sentence, and lets you tap any sentence to start listening from there.
+**BookVoice / 书声** is a local-first Android audiobook player and reader. Import TXT or EPUB, and it reads the book aloud through a TTS provider you configure (Xiaomi MiMo, MiniMax, an OpenAI-compatible endpoint, Deepgram, or the system TTS engine). The reader keeps the whole book in one continuous scroll, highlights the current sentence, and lets you tap any sentence to start listening from there.
 
 - **Library** — TXT (UTF-8/GBK) and EPUB with covers and images; cancellable batch import with per-file retry; bookmarks with undo.
 - **Contents** — cover/title/author header, collapsible volume groups parsed from EPUB nav/NCX or TXT volume headings, current chapter highlighted and scrolled into view.
-- **Playback** — MiMo PCM streaming per chunk, chunk-level prefetch, background playback and lock-screen controls, sleep timer, resume by paragraph, content-addressed audio cache with a configurable limit.
+- **Playback** — MiMo PCM streaming per chunk, chunk-level prefetch, background playback and lock-screen controls, sleep timer (including end-of-chapter), resume by paragraph, content-addressed audio cache with a configurable limit.
+- **Reading** — adjustable font size, line height, paragraph spacing, side margins and font family.
 - **Resilience** — network waits instead of skipping, per-chunk retry, a persistent error banner with manual retry, and a diagnostics panel with sanitized export.
 - **Privacy** — books stay on device; only text chunks go to the TTS provider you choose, billed to your own key. No accounts, no analytics, `allowBackup="false"`.
 

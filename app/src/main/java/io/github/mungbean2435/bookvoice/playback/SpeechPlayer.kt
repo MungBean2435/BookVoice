@@ -31,6 +31,7 @@ import io.github.mungbean2435.bookvoice.tts.TtsException
 import io.github.mungbean2435.bookvoice.tts.TtsProvider
 import io.github.mungbean2435.bookvoice.tts.ProviderRegistry
 import io.github.mungbean2435.bookvoice.tts.rules.RulePack
+import io.github.mungbean2435.bookvoice.tts.system.SystemTtsLog
 import io.github.mungbean2435.bookvoice.tts.rules.RulesEngine
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
@@ -188,12 +189,20 @@ class SpeechPlayer(private val context: Context) {
     private val _cacheChapterIdx = MutableStateFlow(-1)
     val cacheChapterIdx: StateFlow<Int> = _cacheChapterIdx.asStateFlow()
 
+    /** 当前缓存任务属于哪本书，防止切换书籍后把进度算到新书头上。 */
+    private val _cacheBookId = MutableStateFlow("")
+    val cacheBookId: StateFlow<String> = _cacheBookId.asStateFlow()
+
     private var cacheJob: Job? = null
     private var cacheGeneration = 0
     private var totalChars: Long = 0L
 
     private val _sleepMinutes = MutableStateFlow(0)
     val sleepMinutes: StateFlow<Int> = _sleepMinutes.asStateFlow()
+
+    /** 开启后播到当前章末尾就停，不进入下一章。 */
+    private val _sleepAtChapterEnd = MutableStateFlow(false)
+    val sleepAtChapterEnd: StateFlow<Boolean> = _sleepAtChapterEnd.asStateFlow()
 
     @Volatile
     var bookTitle: String = ""
@@ -263,6 +272,10 @@ class SpeechPlayer(private val context: Context) {
     @Volatile
     private var streamDurationMs: Long = 0L
 
+    /** 当前这一块由哪家供应商合成；系统 TTS 的播放错误要写进专属调试日志。 */
+    @Volatile
+    private var playbackProviderId: String = ""
+
     /** [charOffset] 是 [blockIdx] 段内的起始字符（点哪句从哪句起播）。 */
     fun playFrom(bookId: String, chapterIdx: Int, blockIdx: Int, charOffset: Int = 0) {
         stopInternal(stopService = false)
@@ -283,6 +296,7 @@ class SpeechPlayer(private val context: Context) {
         playJob = scope.launch {
             try {
                 val previewProvider = ProviderRegistry.active(previewConfig.providerId)
+                playbackProviderId = previewProvider.id
                 exo.setPlaybackParameters(
                     PlaybackParameters(
                         if (previewProvider.id == "minimax") 1f else Settings.state.value.speed
@@ -372,6 +386,7 @@ class SpeechPlayer(private val context: Context) {
     fun startSleepTimer(minutes: Int) {
         sleepJob?.cancel()
         sleepJob = null
+        _sleepAtChapterEnd.value = false
         if (minutes <= 0) {
             _sleepMinutes.value = 0
             return
@@ -386,6 +401,14 @@ class SpeechPlayer(private val context: Context) {
             }
             stop()
         }
+    }
+
+    /** 播完当前章就停；到章末时不会再把下一章读出来。 */
+    fun startSleepAtChapterEnd() {
+        sleepJob?.cancel()
+        sleepJob = null
+        _sleepMinutes.value = 0
+        _sleepAtChapterEnd.value = true
     }
 
     private suspend fun publishProgress(bookId: String, chapter: Int, block: Int) {
@@ -407,10 +430,49 @@ class SpeechPlayer(private val context: Context) {
         }
     }
 
+    /**
+     * 扫描这些章是否已经完整缓存（按当前供应商/音色/规则计算）。
+     * 只用于离线缓存抽屉展示，调用方应在 IO 线程执行。
+     */
+    suspend fun cachedChapterIdxs(bookId: String, chapterIdxs: List<Int>): Set<Int> =
+        withContext(Dispatchers.IO) {
+            if (bookId.isBlank()) return@withContext emptySet()
+            val settings = Settings.state.value
+            val config = settings.activeConfigOrDefault()
+            val provider = ProviderRegistry.active(config.providerId)
+            val ext = provider.audioFormat
+            val rules = if (settings.builtinRulesEnabled) {
+                listOf(RulesEngine.builtin) + library.rulePacks()
+            } else {
+                library.rulePacks()
+            }
+            val hash = RulesEngine.signature(rules)
+            val out = mutableSetOf<Int>()
+            for (idx in chapterIdxs) {
+                if (!isActive) break
+                val blocks = library.blocks(bookId, idx)
+                if (blocks.isEmpty()) continue
+                val planned = ChunkPlanner.plan(
+                    blocks = blocks.map { it.idx to it.text },
+                    normalize = { RulesEngine.normalize(it, rules) }
+                )
+                if (planned.isEmpty()) continue
+                val allCached = planned.all { chunk ->
+                    val key = cache.key(
+                        provider.cacheKeyId(), config.model, config.voice, ext, hash, chunk.text
+                    )
+                    cache.existing(key, ext) != null
+                }
+                if (allCached) out += idx
+            }
+            out
+        }
+
     /** 把整章合成进缓存（已有命中会跳过），供离线收听。 */
     fun cacheChapter(bookId: String, chapterIdx: Int) {
         if (cacheJob?.isActive == true) return
         val generation = ++cacheGeneration
+        _cacheBookId.value = bookId
         _cacheChapterIdx.value = chapterIdx
         _cacheFailed.value = 0
         _cacheProgress.value = 0 to 0
@@ -465,6 +527,7 @@ class SpeechPlayer(private val context: Context) {
         cacheJob = null
         _cacheRunning.value = false
         _cacheChapterIdx.value = -1
+        _cacheBookId.value = ""
         _cacheFailed.value = 0
         _cacheProgress.value = 0 to 0
     }
@@ -583,7 +646,15 @@ class SpeechPlayer(private val context: Context) {
                                 }
                             }
                         }
-                        continue
+                        // 单块失败不能再 continue：否则同一章后面的块、甚至整本书
+                        // 都会被快速跳过，最后只剩一屏「待补段落」。停到错误态，
+                        // 由播放页的常驻错误条提供重试。
+                        logEvent(
+                            "合成失败：${e.message?.take(60) ?: e.javaClass.simpleName}",
+                            "合成",
+                            DiagnosticLevel.Error
+                        )
+                        throw e
                     }
 
                     if (!paused) {
@@ -609,10 +680,16 @@ class SpeechPlayer(private val context: Context) {
                     if (gap > 0) delay(gap.toLong())
                 }
 
+                if (_sleepAtChapterEnd.value) {
+                    _sleepAtChapterEnd.value = false
+                    _state.value = PlayerState.Idle
+                    return
+                }
                 chapter += 1
                 fromBlock = 0
                 fromOffset = 0
             }
+            _sleepAtChapterEnd.value = false
             _state.value = PlayerState.Idle
         } catch (e: CancellationException) {
             throw e
@@ -697,9 +774,10 @@ class SpeechPlayer(private val context: Context) {
         val settings = Settings.state.value
         val config = configOverride ?: settings.activeConfigOrDefault()
         val currentProvider = ProviderRegistry.active(config.providerId)
+        playbackProviderId = currentProvider.id
         val ext = currentProvider.audioFormat
         val key = cache.key(
-            currentProvider.id,
+            currentProvider.cacheKeyId(),
             config.model,
             config.voice,
             ext,
@@ -707,6 +785,9 @@ class SpeechPlayer(private val context: Context) {
             text
         )
         cache.existing(key, ext)?.let {
+            if (currentProvider.id == "system") {
+                SystemTtsLog.record("缓存", "命中 ${it.length()} 字节")
+            }
             if (countStats) _diagnostics.update { d -> d.copy(cacheHits = d.cacheHits + 1) }
             currentChunkCached = true
             return it
@@ -756,15 +837,33 @@ class SpeechPlayer(private val context: Context) {
                                 )
                             }
                             stored = cache.store(key, result.audio, ext)
+                            if (currentProvider.id == "system") {
+                                SystemTtsLog.record(
+                                    "缓存",
+                                    "写入 ${result.audio.size} 字节（${result.mime}）"
+                                )
+                            }
                             stored
                         } catch (e: TtsException) {
                             failure = e
+                            if (currentProvider.id == "system") {
+                                SystemTtsLog.record(
+                                    "合成",
+                                    "失败：${e.javaClass.simpleName}: ${e.message}"
+                                )
+                            }
                             null
                         }
                     }
                 }
             } catch (e: Exception) {
                 _waitingNetwork.value = false
+                if (currentProvider.id == "system") {
+                    SystemTtsLog.record(
+                        "合成",
+                        "异常：${e.javaClass.simpleName}: ${e.message}"
+                    )
+                }
                 throw e
             }
 
@@ -849,7 +948,7 @@ class SpeechPlayer(private val context: Context) {
         val config = Settings.state.value.activeConfigOrDefault()
         val ext = provider.audioFormat
         val key = cache.key(
-            provider.id, config.model, config.voice, ext,
+            provider.cacheKeyId(), config.model, config.voice, ext,
             RulesEngine.signature(activeRules), chunk.text
         )
         return cache.existing(key, ext) == null
@@ -895,7 +994,7 @@ class SpeechPlayer(private val context: Context) {
         val ext = provider.audioFormat
         val rules = activeRules
         val key = cache.key(
-            provider.id, config.model, config.voice, ext,
+            provider.cacheKeyId(), config.model, config.voice, ext,
             RulesEngine.signature(rules), next.text
         )
         if (cache.existing(key, ext) != null) return
@@ -949,7 +1048,7 @@ class SpeechPlayer(private val context: Context) {
 
         val ext = provider.audioFormat
         val key = cache.key(
-            provider.id, config.model, config.voice, ext,
+            provider.cacheKeyId(), config.model, config.voice, ext,
             RulesEngine.signature(activeRules), chunk.text
         )
         if (cache.existing(key, ext) != null) return false
@@ -1296,6 +1395,12 @@ class SpeechPlayer(private val context: Context) {
 
     private suspend fun playAndWait(file: File) {
         streamDurationMs = 0L
+        if (playbackProviderId == "system") {
+            SystemTtsLog.record(
+                "播放",
+                "交给 ExoPlayer：${file.name}，${file.length()} 字节"
+            )
+        }
         suspendCancellableCoroutine { cont ->
             val listener = mediaListener(cont)
             exo.addListener(listener)
@@ -1334,6 +1439,9 @@ class SpeechPlayer(private val context: Context) {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED) {
                     logEvent("播放器 ENDED", "播放器")
+                    if (playbackProviderId == "system") {
+                        SystemTtsLog.record("播放", "ExoPlayer ENDED")
+                    }
                     exo.removeListener(this)
                     playbackListener = null
                     if (cont.isActive) cont.resume(Unit)
@@ -1353,6 +1461,13 @@ class SpeechPlayer(private val context: Context) {
 
             override fun onPlayerError(error: PlaybackException) {
                 logEvent("播放错误：${error.errorCodeName}", "播放器", DiagnosticLevel.Error)
+                if (playbackProviderId == "system") {
+                    SystemTtsLog.record(
+                        "播放",
+                        "ExoPlayer 错误 ${error.errorCodeName}(${error.errorCode})：" +
+                            "${error.message}；cause=${error.cause?.let { "${it.javaClass.simpleName}: ${it.message}" }}"
+                    )
+                }
                 exo.removeListener(this)
                 playbackListener = null
                 if (cont.isActive) {
@@ -1376,6 +1491,7 @@ class SpeechPlayer(private val context: Context) {
         sleepJob?.cancel()
         sleepJob = null
         _sleepMinutes.value = 0
+        _sleepAtChapterEnd.value = false
         runCatching { exo.stop() }
         streamDurationMs = 0L
         paused = false

@@ -40,6 +40,7 @@ import io.github.mungbean2435.bookvoice.data.settings.Settings
 import io.github.mungbean2435.bookvoice.data.settings.ThemeMode
 import io.github.mungbean2435.bookvoice.playback.AudioCache
 import io.github.mungbean2435.bookvoice.tts.ProviderRegistry
+import io.github.mungbean2435.bookvoice.tts.system.SystemTtsSettings
 import io.github.mungbean2435.bookvoice.ui.components.LocalFloatingChromeReserve
 import io.github.mungbean2435.bookvoice.ui.components.BookVoicePageScaffold
 import io.github.mungbean2435.bookvoice.ui.nav.PageChromeState
@@ -96,8 +97,14 @@ fun SettingsScreen(
     val activeSummary = if (active == null) {
         "还没有配置，点这里添加"
     } else {
-        val providerName = ProviderRegistry.get(active.providerId)?.displayName ?: active.providerId
-        val keyHint = if (active.apiKey.isBlank()) " · 未填 Key" else ""
+        val provider = ProviderRegistry.get(active.providerId)
+        val providerName = provider?.displayName ?: active.providerId
+        // 系统 TTS 本来就不需要 Key，别把「未填 Key」当成异常提示。
+        val keyHint = if (provider?.requiresApiKey == true && active.apiKey.isBlank()) {
+            " · 未填 Key"
+        } else {
+            ""
+        }
         "${active.name} · $providerName$keyHint"
     }
     val versionName = remember(context) { AppInfo.versionName(context) }
@@ -125,6 +132,23 @@ fun SettingsScreen(
                 tone = SettingsTone.Violet,
                 keywords = "语音 音色 模型 供应商 TTS 云端 配置",
                 onClick = onOpenTtsConfig
+            ),
+            SettingsRowSpec(
+                title = "系统语音设置",
+                subtitle = "打开手机的 TTS 引擎 / 离线语音包设置",
+                glyph = SettingsGlyph.Voice,
+                tone = SettingsTone.Violet,
+                keywords = "系统 语音 TTS 引擎 离线 音色 语音包 朗读 无障碍",
+                onClick = {
+                    if (!SystemTtsSettings.open(context)) {
+                        // 个别 ROM 把入口藏得很深：至少把用户带到应用详情页，而不是没反应。
+                        val intent = Intent(
+                            android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.fromParts("package", context.packageName, null)
+                        )
+                        runCatching { context.startActivity(intent) }
+                    }
+                }
             ),
             SettingsRowSpec(
                 title = "播放设置",

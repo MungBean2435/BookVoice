@@ -1,9 +1,11 @@
 package io.github.mungbean2435.bookvoice.ui.settings
 
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,7 +17,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -23,7 +27,6 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -56,8 +59,15 @@ import io.github.mungbean2435.bookvoice.data.settings.TtsConfig
 import io.github.mungbean2435.bookvoice.data.settings.TtsConfigs
 import io.github.mungbean2435.bookvoice.playback.Speech
 import io.github.mungbean2435.bookvoice.tts.ProviderRegistry
+import io.github.mungbean2435.bookvoice.tts.TtsProvider
 import io.github.mungbean2435.bookvoice.ui.components.LocalFloatingChromeReserve
 
+/**
+ * TTS 配置管理。
+ *
+ * 列表只负责管理供应商、Key、模型和音色库；朗读时用哪条配置由阅读页的
+ * 音色面板决定，因此这里不再有「启用 / 未启用」。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TtsConfigListScreen(
@@ -69,8 +79,7 @@ fun TtsConfigListScreen(
     val context = LocalContext.current
     val current by Settings.state.collectAsStateWithLifecycle()
     var query by rememberSaveable { mutableStateOf("") }
-    var showSheet by remember { mutableStateOf(false) }
-    var showTemplates by remember { mutableStateOf(false) }
+    var showAddSheet by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<TtsConfig?>(null) }
 
     fun toast(message: String) {
@@ -80,16 +89,26 @@ fun TtsConfigListScreen(
     fun providerName(providerId: String): String =
         ProviderRegistry.get(providerId)?.displayName ?: providerId
 
-    val active = current.activeConfigOrNull()
-    val activeProviderId = active?.providerId ?: "mimo"
-    val visible = current.configs.filter { config ->
-        val q = query.trim()
+    val providers = ProviderRegistry.all()
+    val knownIds = providers.map { it.id }.toSet()
+    val byProvider = current.configs.groupBy { it.providerId }
+    val q = query.trim()
+
+    fun matches(config: TtsConfig): Boolean =
         q.isBlank() || listOf(
             config.name,
             providerName(config.providerId),
             config.model,
             config.voice
         ).any { it.contains(q, ignoreCase = true) }
+
+    val matchingConfigs = current.configs.filter(::matches)
+    val unknownConfigs = matchingConfigs.filter { it.providerId !in knownIds }
+
+    fun duplicate(config: TtsConfig) {
+        val copy = TtsConfigs.duplicate(config, current.configs.map { it.name })
+        Settings.update { old -> old.copy(configs = old.configs + copy) }
+        toast("已复制为「${copy.name}」")
     }
 
     Scaffold(
@@ -102,12 +121,7 @@ fun TtsConfigListScreen(
                     }
                 },
                 actions = {
-                    IconButton(
-                        onClick = {
-                            showTemplates = false
-                            showSheet = true
-                        }
-                    ) {
+                    IconButton(onClick = { showAddSheet = true }) {
                         Icon(Icons.Filled.Add, contentDescription = "添加配置")
                     }
                 }
@@ -121,38 +135,41 @@ fun TtsConfigListScreen(
         ) {
             Text(
                 "TTS 配置",
-                modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 4.dp),
+                modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 4.dp),
                 style = MaterialTheme.typography.headlineMedium
+            )
+            Text(
+                "在阅读页的音色面板切换朗读配置；这里管理供应商、Key、模型与音色库。",
+                modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 4.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
                 placeholder = { Text("搜索名称 / 供应商 / 模型 / 音色") },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 singleLine = true,
                 shape = RoundedCornerShape(28.dp)
             )
 
-            if (visible.isEmpty()) {
+            if (q.isNotBlank() && matchingConfigs.isEmpty()) {
                 EmptyState(
-                    hasQuery = query.isNotBlank(),
+                    hasQuery = true,
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f),
                     onClear = { query = "" },
-                    onAdd = {
-                        showTemplates = true
-                        showSheet = true
-                    }
+                    onAdd = { showAddSheet = true }
                 )
             } else {
                 LazyColumn(
                     modifier = Modifier.weight(1f),
                     state = listState,
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    contentPadding = PaddingValues(
                         start = 16.dp,
                         end = 16.dp,
                         top = 4.dp,
@@ -160,123 +177,80 @@ fun TtsConfigListScreen(
                     ),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(visible, key = { it.id }) { config ->
-                        ConfigCard(
-                            config = config,
-                            active = config.id == active?.id,
-                            providerName = providerName(config.providerId),
-                            onOpen = { onEdit(config.id) },
-                            onActivate = {
-                                Settings.update { old -> old.copy(activeConfigId = config.id) }
-                                Speech.get().applySpeed(Settings.state.value.speed)
-                                toast("已切换到「${config.name}」")
-                            },
-                            onDuplicate = {
-                                val copy = TtsConfigs.duplicate(config, current.configs.map { it.name })
-                                Settings.update { old -> old.copy(configs = old.configs + copy) }
-                                toast("已复制为「${copy.name}」")
-                            },
-                            onDelete = { pendingDelete = config }
-                        )
+                    if (q.isBlank()) {
+                        providers.forEach { provider ->
+                            val configs = byProvider[provider.id].orEmpty()
+                            if (configs.isEmpty()) {
+                                item(key = "template:${provider.id}") {
+                                    ProviderTemplateCard(
+                                        provider = provider,
+                                        onClick = { onAdd(provider.id) }
+                                    )
+                                }
+                            } else {
+                                items(configs, key = { it.id }) { config ->
+                                    ConfigCard(
+                                        config = config,
+                                        providerName = providerName(config.providerId),
+                                        onOpen = { onEdit(config.id) },
+                                        onDuplicate = { duplicate(config) },
+                                        onDelete = { pendingDelete = config }
+                                    )
+                                }
+                            }
+                        }
+                        if (unknownConfigs.isNotEmpty()) {
+                            item(key = "unknown-header") {
+                                Text(
+                                    "其他配置",
+                                    modifier = Modifier.padding(top = 8.dp, start = 4.dp),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            items(unknownConfigs, key = { it.id }) { config ->
+                                ConfigCard(
+                                    config = config,
+                                    providerName = providerName(config.providerId),
+                                    onOpen = { onEdit(config.id) },
+                                    onDuplicate = { duplicate(config) },
+                                    onDelete = { pendingDelete = config }
+                                )
+                            }
+                        }
+                    } else {
+                        items(matchingConfigs, key = { it.id }) { config ->
+                            ConfigCard(
+                                config = config,
+                                providerName = providerName(config.providerId),
+                                onOpen = { onEdit(config.id) },
+                                onDuplicate = { duplicate(config) },
+                                onDelete = { pendingDelete = config }
+                            )
+                        }
                     }
                 }
             }
         }
     }
 
-    if (showSheet) {
-        ModalBottomSheet(onDismissRequest = { showSheet = false }) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 20.dp)
-                    .padding(bottom = 24.dp)
-            ) {
-                if (!showTemplates) {
-                    Text("新建配置", style = MaterialTheme.typography.titleLarge)
-                    Spacer(Modifier.height(12.dp))
-                    SheetRow(
-                        title = "添加配置",
-                        subtitle = "使用当前供应商（${providerName(activeProviderId)}）的模板",
-                        onClick = {
-                            showSheet = false
-                            onAdd(activeProviderId)
-                        }
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    SheetRow(
-                        title = "添加配置模板",
-                        subtitle = "先选 MiMo / MiniMax 模板，再填字段",
-                        onClick = { showTemplates = true }
-                    )
-                } else {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = { showTemplates = false }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                        }
-                        Text("添加配置模板", style = MaterialTheme.typography.titleLarge)
-                    }
-                    Text(
-                        "选中模板后会进入详情页，字段都可以改。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    ProviderRegistry.all().forEach { provider ->
-                        Card(
-                            onClick = {
-                                showSheet = false
-                                onAdd(provider.id)
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(18.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant
-                            )
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(14.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                ProviderAvatar(provider.id, provider.displayName, 44.dp)
-                                Spacer(Modifier.width(12.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text(provider.displayName, style = MaterialTheme.typography.titleMedium)
-                                    Text(
-                                        "默认模型 ${provider.defaultConfig.model}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                                Text("›", style = MaterialTheme.typography.titleLarge)
-                            }
-                        }
-                        Spacer(Modifier.height(8.dp))
-                    }
-                }
-            }
-        }
+    if (showAddSheet) {
+        AddProviderSheet(
+            providers = providers,
+            counts = byProvider.mapValues { it.value.size },
+            onPick = { providerId ->
+                showAddSheet = false
+                onAdd(providerId)
+            },
+            onDismiss = { showAddSheet = false }
+        )
     }
 
     pendingDelete?.let { config ->
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
             title = { Text("删除配置") },
-            text = {
-                val deletingActive = config.id == current.activeConfigId
-                val hasOther = current.configs.any { it.id != config.id }
-                val suffix = when {
-                    deletingActive && hasOther -> "这是当前启用的配置，删除后会切换到另一条。"
-                    deletingActive -> "这是最后一条配置，删除后需要重新添加才能朗读。"
-                    else -> ""
-                }
-                Text("确定删除「${config.name}」？$suffix")
-            },
+            text = { Text("确定删除「${config.name}」？删除后不可恢复。") },
             confirmButton = {
                 TextButton(onClick = {
                     val id = config.id
@@ -305,12 +279,57 @@ fun TtsConfigListScreen(
 }
 
 @Composable
+private fun ProviderTemplateCard(
+    provider: TtsProvider,
+    onClick: () -> Unit
+) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ProviderAvatar(provider.id, provider.displayName)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    provider.displayName,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    "模板 · 默认模型 ${provider.defaultConfig.model.ifBlank { "未设置" }}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Icon(
+                Icons.Filled.Add,
+                contentDescription = "添加 ${provider.displayName} 配置",
+                tint = MaterialTheme.colorScheme.primary
+            )
+        }
+    }
+}
+
+@Composable
 private fun ConfigCard(
     config: TtsConfig,
-    active: Boolean,
     providerName: String,
     onOpen: () -> Unit,
-    onActivate: () -> Unit,
     onDuplicate: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -336,16 +355,12 @@ private fun ConfigCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Spacer(Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    ConfigStatusChip(active)
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        providerName,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    providerName,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
                 Spacer(Modifier.height(2.dp))
                 Text(
                     "${config.model.ifBlank { "未填模型" }} · ${config.voice.ifBlank { "未填音色" }}",
@@ -367,15 +382,6 @@ private fun ConfigCard(
                             onOpen()
                         }
                     )
-                    if (!active) {
-                        DropdownMenuItem(
-                            text = { Text("设为启用") },
-                            onClick = {
-                                menu = false
-                                onActivate()
-                            }
-                        )
-                    }
                     DropdownMenuItem(
                         text = { Text("复制") },
                         onClick = {
@@ -403,33 +409,97 @@ private fun ConfigCard(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SheetRow(
-    title: String,
-    subtitle: String,
+private fun AddProviderSheet(
+    providers: List<TtsProvider>,
+    counts: Map<String, Int>,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp)
+        ) {
+            Text("添加配置", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "选择供应商模板；保存后可继续改 Key、模型和音色。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(14.dp))
+            providers.chunked(2).forEach { rowProviders ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    rowProviders.forEach { provider ->
+                        ProviderPickCard(
+                            provider = provider,
+                            count = counts[provider.id] ?: 0,
+                            modifier = Modifier.weight(1f),
+                            onClick = { onPick(provider.id) }
+                        )
+                    }
+                    if (rowProviders.size == 1) {
+                        Spacer(Modifier.weight(1f))
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProviderPickCard(
+    provider: TtsProvider,
+    count: Int,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     Card(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier,
         shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(14.dp)
         ) {
-            Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.titleMedium)
-                Text(
-                    subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ProviderAvatar(provider.id, provider.displayName, 38.dp)
+                Spacer(Modifier.width(8.dp))
+                Icon(
+                    Icons.Filled.Add,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
                 )
             }
-            Text("›", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(10.dp))
+            Text(
+                provider.displayName,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                if (count > 0) "已有 $count 条 · 再加一条" else "默认模型 ${provider.defaultConfig.model}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -452,7 +522,7 @@ private fun EmptyState(
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            if (hasQuery) "换个关键词试试。" else "从模板添加第一条，或新建一条手动填。",
+            if (hasQuery) "换个关键词试试。" else "从供应商模板添加第一条。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -460,7 +530,7 @@ private fun EmptyState(
         if (hasQuery) {
             OutlinedButton(onClick = onClear) { Text("清除搜索") }
         } else {
-            Button(onClick = onAdd) { Text("添加配置模板") }
+            OutlinedButton(onClick = onAdd) { Text("添加配置") }
         }
     }
 }

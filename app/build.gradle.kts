@@ -26,7 +26,7 @@ android {
         applicationId = "io.github.mungbean2435.bookvoice"
         minSdk = 26
         targetSdk = 35
-        versionCode = 72
+        versionCode = 75
         versionName = "3.4.0"
     }
 
